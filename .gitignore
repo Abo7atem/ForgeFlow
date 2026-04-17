@@ -1,0 +1,39 @@
+# Build outputs
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+.vs/
+
+# Local release artifacts
+Output/
+GitHubRelease/
+SourceForGitHub/
+*.zip
+*.exe
+*.msi
+*.pdb
+*.log
+
+# Obfuscation output / maps
+*.generated.xml
+Mapping.txt
+
+# Private keys and secrets
+secrets/
+*private_key*
+*.pfx
+*.snk
+*.pem
+
+# Heavy runtime tools should not be committed to GitHub source
+ForgeFlow/Tools/*.exe
+ForgeFlow/Tools/**/*.exe
+ForgeFlow/Tools/**/*.bin
+
+# User/local settings
+*.user
+*.suo
+*.rsuser
+*.DotSettings.user
+
