@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ForgeFlow.Security
 {
@@ -31,7 +32,7 @@ namespace ForgeFlow.Security
             if (CurrentLicense.Type == LicenseType.None || CurrentLicense.Status != LicenseStatus.Active)
                 return false;
 
-            if (!TryValidateSignedKey(CurrentLicense.LicenseKey.Trim().ToUpperInvariant(), out LicenseType signedType, out _))
+            if (!TryValidateSignedKey(NormalizeLicenseKey(CurrentLicense.LicenseKey), out LicenseType signedType, out _))
                 return false;
 
             if (signedType != CurrentLicense.Type)
@@ -72,17 +73,18 @@ namespace ForgeFlow.Security
 
         public (bool Success, string Message) ActivateLicense(string licenseKey)
         {
-            var (valid, type, message) = ValidateKey(licenseKey);
+            string cleanLicenseKey = NormalizeLicenseKey(licenseKey);
+            var (valid, type, message) = ValidateKey(cleanLicenseKey);
             if (!valid) return (false, message);
 
             string currentToken = HardwareIdHelper.GetLicenseHardwareToken();
-            string keyToken = ExtractKeyHardwareToken(licenseKey);
+            string keyToken = ExtractKeyHardwareToken(cleanLicenseKey);
             if (!ConstantTimeEquals(currentToken, keyToken))
                 return (false, $"هذا المفتاح ليس لهذا الجهاز.\nMachine ID: {currentToken}");
 
             CurrentLicense = new LicenseInfo
             {
-                LicenseKey = licenseKey.Trim().ToUpperInvariant(),
+                LicenseKey = cleanLicenseKey,
                 Type = type,
                 HardwareId = HardwareIdHelper.GetHardwareId(),
                 ActivatedOn = DateTime.UtcNow,
@@ -105,7 +107,7 @@ namespace ForgeFlow.Security
             if (string.IsNullOrWhiteSpace(licenseKey))
                 return (false, LicenseType.None, "أدخل مفتاح الترخيص.");
 
-            if (TryValidateSignedKey(licenseKey.Trim().ToUpperInvariant(), out var type, out var message))
+            if (TryValidateSignedKey(NormalizeLicenseKey(licenseKey), out var type, out var message))
                 return (true, type, message ?? "المفتاح صالح.");
 
             return (false, LicenseType.None, message ?? "مفتاح الترخيص غير صالح.");
@@ -136,7 +138,8 @@ namespace ForgeFlow.Security
             string[] parts = licenseKey.Split(SignedKeySeparator);
             if (parts.Length != 4) { message = "صيغة المفتاح غير صحيحة."; return false; }
 
-            type = parts[0] switch
+            string prefix = parts[0].ToUpperInvariant();
+            type = prefix switch
             {
                 "MON" => LicenseType.Monthly,
                 "6MO" => LicenseType.SemiAnnual,
@@ -147,7 +150,7 @@ namespace ForgeFlow.Security
             if (type == LicenseType.None) { message = "نوع المفتاح غير معروف."; return false; }
 
             string hardwareToken = NormalizeHardwareToken(parts[1]);
-            string randomPart = parts[2];
+            string randomPart = parts[2].ToUpperInvariant();
             string signaturePart = parts[3];
             if (hardwareToken.Length != 16 || randomPart.Length != SignedRandomLength || !IsAlphaNumeric(hardwareToken + randomPart))
             {
@@ -155,7 +158,7 @@ namespace ForgeFlow.Security
                 return false;
             }
 
-            string payload = $"{parts[0]}.{hardwareToken}.{randomPart}";
+            string payload = $"{prefix}.{hardwareToken}.{randomPart}";
             if (!VerifySignedPayload(payload, signaturePart))
             {
                 message = "التوقيع الرقمي للمفتاح غير صالح.";
@@ -167,8 +170,32 @@ namespace ForgeFlow.Security
 
         private static string ExtractKeyHardwareToken(string licenseKey)
         {
-            string[] parts = (licenseKey ?? string.Empty).Trim().ToUpperInvariant().Split(SignedKeySeparator);
+            string[] parts = (licenseKey ?? string.Empty).Trim().Split(SignedKeySeparator);
             return parts.Length >= 2 ? NormalizeHardwareToken(parts[1]) : string.Empty;
+        }
+
+        private static string NormalizeLicenseKey(string licenseKey)
+        {
+            var builder = new StringBuilder();
+            foreach (char c in (licenseKey ?? string.Empty).Trim())
+            {
+                if (char.IsWhiteSpace(c) || char.IsControl(c) || c == '\u200E' || c == '\u200F')
+                    continue;
+
+                builder.Append(c switch
+                {
+                    '٫' or '·' or '•' or '。' => '.',
+                    _ => c
+                });
+            }
+
+            string compact = builder.ToString().Trim('"', '\'', '`');
+            Match match = Regex.Match(
+                compact,
+                @"(?:MON|6MO|YER|LFT)\.[A-Za-z0-9]{16}\.[A-Za-z0-9]{8}\.[A-Za-z0-9_-]{300,900}",
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+            return match.Success ? match.Value : compact;
         }
 
         private static string NormalizeHardwareToken(string hardwareToken)

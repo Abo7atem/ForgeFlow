@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.0.39</Version>
+    <FileVersion>1.0.39.0</FileVersion>
+    <AssemblyVersion>1.0.39.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -17,13 +17,23 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Installer\**\*.cs" />
+    <Compile Remove="artifacts\**\*.cs" />
+    <EmbeddedResource Remove="Installer\**\*" />
+    <EmbeddedResource Remove="artifacts\**\*" />
+    <None Remove="Installer\**\*" />
+    <None Remove="artifacts\**\*" />
     <None Remove="Assets\ForgeFlow.ico" />
     <None Remove="Assets\ForgeFlow.png" />
+    <None Remove="Assets\ForgeFlowMark.png" />
     <Resource Include="Assets\ForgeFlow.ico" />
     <Resource Include="Assets\ForgeFlow.png" />
+    <Resource Include="Assets\ForgeFlowMark.png" />
+    <Resource Include="Assets\Emoji\*.png" />
     <None Update="Tools\**\*">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Include="Tools\tools.sha256" CopyToOutputDirectory="Always" />
     <None Include="..\version.txt">
       <Link>version.txt</Link>
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>

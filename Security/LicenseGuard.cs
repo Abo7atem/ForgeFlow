@@ -132,7 +132,7 @@ namespace ForgeFlow.Security
                     return false;
                 }
 
-                string currentKey = _licenseManager.CurrentLicense.LicenseKey.Trim().ToUpperInvariant();
+                string currentKey = _licenseManager.CurrentLicense.LicenseKey.Trim();
                 if (!ConstantTimeEquals(currentKey, session.LicenseKeySnapshot))
                 {
                     message = "Active license changed during processing.";
@@ -214,7 +214,7 @@ namespace ForgeFlow.Security
         {
             Allowed = true,
             Mode = LicenseAccessMode.Licensed,
-            LicenseKeySnapshot = licenseKey.Trim().ToUpperInvariant()
+            LicenseKeySnapshot = licenseKey.Trim()
         };
 
         public static GuardDecision AllowTrial(int remaining, int trialCount) => new()

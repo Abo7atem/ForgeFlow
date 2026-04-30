@@ -20,6 +20,9 @@ namespace ForgeFlow.Security
         private static readonly string MarkerPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ForgeFlow", "install.idx");
+        private static readonly string CommonMarkerPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "ForgeFlow", "Lite", "install.idx");
 
         public static (bool Allowed, int Remaining, bool Tampered) CheckTrial()
         {
@@ -134,8 +137,14 @@ namespace ForgeFlow.Security
             }
             catch { }
 
-            try { return File.Exists(MarkerPath); }
+            try
+            {
+                if (File.Exists(MarkerPath)) return true;
+                if (File.Exists(CommonMarkerPath)) return true;
+            }
             catch { return false; }
+
+            return false;
         }
 
         private static void SaveInstallMarker()
@@ -152,6 +161,13 @@ namespace ForgeFlow.Security
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(MarkerPath)!);
                 File.WriteAllText(MarkerPath, marker);
+            }
+            catch { }
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(CommonMarkerPath)!);
+                File.WriteAllText(CommonMarkerPath, marker);
             }
             catch { }
         }

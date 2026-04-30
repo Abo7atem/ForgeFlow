@@ -3,9 +3,14 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using ForgeFlow.Security;
 using VideoProcessing;
 
@@ -25,6 +30,18 @@ namespace ForgeFlow
         private readonly LicenseGuard _licenseGuard;
         private readonly UpdateChecker _updateChecker;
         private bool _updateGatePassed;
+        private bool _updateCheckInProgress;
+        private ToolCheckResult? _toolStatus;
+        private VideoInfo? _selectedVideoInfo;
+        private CancellationTokenSource? _videoInfoCts;
+        private readonly DispatcherTimer _runnerTimer;
+        private int _runnerFrame;
+        private static readonly BitmapImage RunnerImage = LoadEmojiImage("runner.png");
+        private static readonly BitmapImage RunnerManImage = LoadEmojiImage("runner_man.png");
+        private static readonly BitmapImage PartyImage = LoadEmojiImage("party.png");
+        private static readonly BitmapImage DizzyImage = LoadEmojiImage("dizzy.png");
+        private static readonly BitmapImage ReliefImage = LoadEmojiImage("relief.png");
+        private static readonly BitmapImage StopImage = LoadEmojiImage("stop.png");
 
         public MainWindow()
         {
@@ -32,12 +49,41 @@ namespace ForgeFlow
             _licenseManager = new LicenseManager();
             _licenseGuard = new LicenseGuard(_licenseManager);
             _updateChecker = new UpdateChecker();
+            _runnerTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(170) };
+            _runnerTimer.Tick += (_, _) => AdvanceRunnerFrame();
+            InputTextBox.TextChanged += (_, _) =>
+            {
+                RefreshOutputPreview();
+                RefreshActionButtons();
+            };
+            OutputTextBox.TextChanged += (_, _) =>
+            {
+                RefreshOutputPreview();
+                RefreshActionButtons();
+            };
+            StartButton.IsEnabled = false;
+            ActivationButton.IsEnabled = false;
+            ToolsStatusTextBlock.Text = "Running startup checks...";
+            ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
+            VideoInfoTextBlock.Text = "Verifying tools, integrity manifest, version, and rife-v4.26 model";
+            VideoInfoTextBlock.Foreground = Brushes.Gray;
+            EstimateTextBlock.Text = "Start will unlock automatically when startup and update checks pass.";
+            EstimateTextBlock.Foreground = Brushes.Gray;
 
             string? tamperMessage = _licenseManager.CheckForDateTamper();
             if (!string.IsNullOrWhiteSpace(tamperMessage))
                 MessageBox.Show(this, tamperMessage, "License Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
 
-            Loaded += async (_, _) => await CheckForMandatoryUpdatesAsync(showNoUpdateMessage: false);
+            Loaded += async (_, _) =>
+            {
+                VersionTextBlock.Text = "v" + GetAppVersion();
+                UpdateLicenseStatus();
+                await RunStartupChecksAsync();
+                CleanupOldUpdateInstallers();
+                CleanupStaleProcessingSessions();
+                await CheckForMandatoryUpdatesAsync(showNoUpdateMessage: false);
+                RefreshActionButtons();
+            };
         }
 
         private void BrowseInput_Click(object sender, RoutedEventArgs e)
@@ -57,7 +103,8 @@ namespace ForgeFlow
             {
                 Filter = "MP4 Video|*.mp4|All Files|*.*",
                 DefaultExt = ".mp4",
-                FileName = "output.mp4"
+                InitialDirectory = GetSuggestedOutputDirectory(),
+                FileName = GetSuggestedOutputFileName()
             };
 
             if (sfd.ShowDialog() == true)
@@ -73,8 +120,8 @@ namespace ForgeFlow
             _lastOutput = output;
 
             LogsTextBox.Clear();
-            MainProgressBar.Value = 0;
-            PercentLabel.Text = "0%";
+            SetProgressVisual(0, "🏃", "Warming up", Brushes.DeepSkyBlue);
+            StartRunnerAnimation();
             StageLabel.Text = "Starting...";
 
             if (!File.Exists(input))
@@ -88,6 +135,22 @@ namespace ForgeFlow
                 FailUI("حدد مسار الإخراج.");
                 return;
             }
+
+            if (!ValidateInputOutputPaths(input, output))
+                return;
+
+            ToolCheckResult tools = RefreshToolsStatus(showDetails: false);
+            if (!tools.Ready)
+            {
+                FailUI("أدوات المعالجة غير جاهزة.\n\n" + tools.Details);
+                return;
+            }
+
+            if (!EnsureEnoughDiskSpace(input, output))
+                return;
+
+            if (!ConfirmOverwriteOutputs(output))
+                return;
 
             if (!await EnsureUpdateGateAsync())
                 return;
@@ -115,18 +178,9 @@ namespace ForgeFlow
             {
                 if (!AdvanceLicenseCheckpoint(guardSession, "preflight")) return;
 
-                string toolsDir = Path.Combine(AppContext.BaseDirectory, "Tools");
-                string ffmpeg = Path.Combine(toolsDir, "ffmpeg.exe");
-                string ffprobe = Path.Combine(toolsDir, "ffprobe.exe");
-                string rife = Path.Combine(toolsDir, "rife-ncnn-vulkan.exe");
-
-                if (!File.Exists(ffmpeg)) throw new FileNotFoundException("ffmpeg.exe not found in Tools", ffmpeg);
-                if (!File.Exists(ffprobe)) throw new FileNotFoundException("ffprobe.exe not found in Tools", ffprobe);
-                if (!File.Exists(rife)) throw new FileNotFoundException("rife-ncnn-vulkan.exe not found in Tools", rife);
-
                 if (!AdvanceLicenseCheckpoint(guardSession, "tools-verified")) return;
 
-                var interpolator = new VideoInterpolator(rife, ffmpeg, ffprobe)
+                var interpolator = new VideoInterpolator(tools.RifePath, tools.FfmpegPath, tools.FfprobePath)
                 {
                     // RIFE — FIX: use "0" for RTX 5070 instead of "auto"
                     RifeModelName = "rife-v4.26",
@@ -171,6 +225,7 @@ namespace ForgeFlow
                     // Logging
                     VerboseLogging = false
                 };
+                ApplySelectedPreset(interpolator);
 
                 AppendLog("Started");
                 AppendLog("Input: " + Path.GetFileName(input));
@@ -200,22 +255,25 @@ namespace ForgeFlow
                     RetryButton.IsEnabled = true;
                     return;
                 }
-                MainProgressBar.Value = 100;
+                StopRunnerAnimation("🎉");
+                SetProgressVisual(100, "🎉", "Delivered", Brushes.LightGreen);
                 StageLabel.Text = "Done ✓";
-                PercentLabel.Text = "100%";
+                UpdateLicenseStatus();
 
-                MessageBox.Show(
-                    "تم بنجاح!\n\n" +
-                    "الملفات المنتجة:\n" +
-                    "  Video 60FPS.mp4\n" +
-                    "  TikTok30FPS.mp4",
-                    "OK",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                string[] produced = GetExpectedOutputPaths(output);
+                var successWindow = new SuccessWindow(produced[0], produced[1])
+                {
+                    Owner = this
+                };
+                successWindow.ShowDialog();
+                if (successWindow.OpenFolderRequested && !string.IsNullOrWhiteSpace(outDir))
+                    OpenFolder(outDir);
             }
             catch (OperationCanceledException)
             {
                 AppendLog("Canceled by user.");
+                StopRunnerAnimation("😮‍💨");
+                SetProgressMood("😮‍💨", "Paused", Brushes.Goldenrod);
                 MessageBox.Show("تم إلغاء العملية.", "Canceled", MessageBoxButton.OK, MessageBoxImage.Information);
                 RetryButton.IsEnabled = true;
             }
@@ -235,6 +293,13 @@ namespace ForgeFlow
 
         private void CancelButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_cts == null)
+                return;
+
+            AppendLog("Canceling...");
+            StopRunnerAnimation("🛑");
+            SetProgressMood("🛑", "Stopping", Brushes.Goldenrod);
+            CancelButton.IsEnabled = false;
             _cts?.Cancel();
         }
 
@@ -264,12 +329,173 @@ namespace ForgeFlow
                 OpenUpdateUrl(url);
         }
 
+        private void TestToolsButton_Click(object sender, RoutedEventArgs e)
+        {
+            ToolCheckResult result = RefreshToolsStatus(showDetails: true);
+            MessageBox.Show(
+                this,
+                result.Details,
+                result.Ready ? "Tools Ready" : "Tools Check Failed",
+                MessageBoxButton.OK,
+                result.Ready ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+
+        private void AboutButton_Click(object sender, RoutedEventArgs e)
+        {
+            var about = new AboutWindow(LicenseStatusTextBlock.Text)
+            {
+                Owner = this
+            };
+            about.ShowDialog();
+        }
+
+        private void ClearLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            LogsTextBox.Clear();
+        }
+
+        private void CopyLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            string text = LogsTextBox.Text;
+            if (!string.IsNullOrWhiteSpace(text))
+                Clipboard.SetText(text);
+        }
+
+        private void OpenOutputFolderButton_Click(object sender, RoutedEventArgs e)
+        {
+            string output = OutputTextBox.Text.Trim();
+            string folder = Path.GetDirectoryName(output) ?? "";
+            if (Directory.Exists(folder))
+                OpenFolder(folder);
+        }
+
         private void SetBusy(bool busy)
         {
-            StartButton.IsEnabled = !busy;
+            StartButton.IsEnabled = !busy && CanStartProcessing();
             CancelButton.IsEnabled = busy;
-            ActivationButton.IsEnabled = !busy;
-            UpdateButton.IsEnabled = !busy;
+            ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
+            UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+        }
+
+        private bool CanStartProcessing()
+        {
+            return (_toolStatus?.Ready ?? false) &&
+                   _updateGatePassed &&
+                   _cts == null &&
+                   HasRunnableInputOutput();
+        }
+
+        private bool HasRunnableInputOutput()
+        {
+            string input = InputTextBox.Text.Trim();
+            string output = OutputTextBox.Text.Trim();
+            return File.Exists(input) &&
+                   SupportedVideoExtensions.Contains(Path.GetExtension(input), StringComparer.OrdinalIgnoreCase) &&
+                   !string.IsNullOrWhiteSpace(Path.GetDirectoryName(output)) &&
+                   string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase) &&
+                   !PathsEqual(input, output);
+        }
+
+        private void RefreshActionButtons()
+        {
+            bool busy = _cts != null;
+            StartButton.IsEnabled = !busy && CanStartProcessing();
+            CancelButton.IsEnabled = busy;
+            ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
+            UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+        }
+
+        private void SetProgressVisual(double percent, string face, string text, Brush brush)
+        {
+            double value = Math.Clamp(percent, 0, 100);
+            MainProgressBar.Value = value;
+            PercentLabel.Text = $"{value:0}%";
+            SetProgressMood(face, text, brush);
+            PositionProgressMoodBubble();
+        }
+
+        private void SetProgressMood(string face, string text, Brush brush)
+        {
+            if (!_runnerTimer.IsEnabled)
+                SetRunnerState(face, showDash: false);
+            ProgressMoodText.Text = text;
+            ProgressMoodBubble.BorderBrush = brush;
+        }
+
+        private void StartRunnerAnimation()
+        {
+            _runnerFrame = 0;
+            RunnerIconImage.Source = RunnerImage;
+            RunnerDashImage.Visibility = Visibility.Collapsed;
+            RunnerBounceTransform.X = 0;
+            RunnerBounceTransform.Y = 0;
+            _runnerTimer.Start();
+        }
+
+        private void StopRunnerAnimation(string finalIcon)
+        {
+            _runnerTimer.Stop();
+            SetRunnerState(finalIcon, showDash: false);
+            RunnerBounceTransform.X = 0;
+            RunnerBounceTransform.Y = 0;
+        }
+
+        private void AdvanceRunnerFrame()
+        {
+            _runnerFrame++;
+            int frame = _runnerFrame % 4;
+            RunnerIconImage.Source = frame < 2 ? RunnerImage : RunnerManImage;
+            RunnerDashImage.Visibility = frame is 1 or 3 ? Visibility.Visible : Visibility.Collapsed;
+            RunnerBounceTransform.X = (_runnerFrame % 2 == 0) ? 0 : 4;
+            RunnerBounceTransform.Y = (_runnerFrame % 3 == 0) ? -2 : 1;
+        }
+
+        private void SetRunnerState(string icon, bool showDash)
+        {
+            RunnerIconImage.Source = icon switch
+            {
+                "🎉" => PartyImage,
+                "😵" => DizzyImage,
+                "😮‍💨" => ReliefImage,
+                "🛑" => StopImage,
+                "🏃‍♂️" or "🏃‍♂️💨" => RunnerManImage,
+                _ => RunnerImage
+            };
+            RunnerDashImage.Visibility = showDash || icon.Contains("💨", StringComparison.Ordinal)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+
+        private static BitmapImage LoadEmojiImage(string fileName)
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri($"pack://application:,,,/Assets/Emoji/{fileName}", UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+
+        private void PositionProgressMoodBubble()
+        {
+            if (ProgressMoodTrack.ActualWidth <= 0 || ProgressMoodBubble.ActualWidth <= 0)
+                return;
+
+            double maxLeft = Math.Max(0, ProgressMoodTrack.ActualWidth - ProgressMoodBubble.ActualWidth);
+            double left = maxLeft * (MainProgressBar.Value / Math.Max(1d, MainProgressBar.Maximum));
+            Canvas.SetLeft(ProgressMoodBubble, left);
+        }
+
+        private void ProgressMoodTrack_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            PositionProgressMoodBubble();
+        }
+
+        private void PresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            RefreshPresetInsight();
+            RefreshOutputPreview();
         }
 
         private bool EnsureAccessBeforeProcessing()
@@ -282,7 +508,7 @@ namespace ForgeFlow
                     int remainingAfterThis = Math.Max(0, decision.Remaining - 1);
                     var confirm = MessageBox.Show(
                         this,
-                        $"Trial mode: this will use one free run.\nRemaining after this video: {remainingAfterThis} of {TrialManager.MaxTrialVideos}.\n\nContinue?",
+                        $"وضع التجربة: سيتم استخدام محاولة مجانية واحدة.\nالمتبقي بعد هذا الفيديو: {remainingAfterThis} من {TrialManager.MaxTrialVideos}.\n\nهل تريد المتابعة؟",
                         "ForgeFlow Trial",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Information);
@@ -294,7 +520,7 @@ namespace ForgeFlow
 
             var openActivation = MessageBox.Show(
                 this,
-                decision.Message + "\n\nDo you want to open activation now?",
+                decision.Message + "\n\nهل تريد فتح نافذة التفعيل الآن؟",
                 "Activation Required",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
@@ -315,6 +541,7 @@ namespace ForgeFlow
                 Owner = this
             };
             window.ShowDialog();
+            UpdateLicenseStatus();
         }
 
         private bool AdvanceLicenseCheckpoint(LicenseGuard.GuardSession? session, string checkpoint)
@@ -338,7 +565,7 @@ namespace ForgeFlow
             {
                 MessageBox.Show(
                     this,
-                    "ForgeFlow Lite could not verify mandatory updates. Processing is blocked until the update check succeeds.",
+                    "تعذر التحقق من التحديثات الإجبارية. المعالجة متوقفة حتى ينجح فحص التحديث.",
                     "Update Check Required",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -349,12 +576,23 @@ namespace ForgeFlow
 
         private async Task<bool> CheckForMandatoryUpdatesAsync(bool showNoUpdateMessage)
         {
+            if (_updateCheckInProgress)
+                return false;
+
             try
             {
+                _updateCheckInProgress = true;
+                RefreshActionButtons();
+                ToolsStatusTextBlock.Text = "Checking mandatory updates...";
+                ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
+                EstimateTextBlock.Text = "Processing is locked until the update check succeeds.";
+                EstimateTextBlock.Foreground = Brushes.Gray;
+
                 UpdateInfo? update = await _updateChecker.CheckForUpdatesAsync();
                 if (update == null)
                 {
                     _updateGatePassed = true;
+                    ApplyToolStatusToUi(_toolStatus ?? RefreshToolsStatus(showDetails: false));
                     if (showNoUpdateMessage)
                     {
                         MessageBox.Show(this, "ForgeFlow Lite is up to date.", "Updates", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -362,28 +600,115 @@ namespace ForgeFlow
                     return true;
                 }
 
+                if (update.IsBlocked)
+                {
+                    _updateGatePassed = false;
+                    ToolsStatusTextBlock.Text = "This build is disabled";
+                    ToolsStatusTextBlock.Foreground = Brushes.OrangeRed;
+                    EstimateTextBlock.Text = "Processing and activation are locked by the publisher.";
+                    EstimateTextBlock.Foreground = Brushes.Orange;
+                    MessageBox.Show(
+                        this,
+                        "تم إيقاف هذه النسخة من ForgeFlow Lite من قبل المطور.\n\n" +
+                        update.MandatoryReason + "\n\n" +
+                        "المعالجة والتفعيل متوقفان حتى يتم نشر نسخة مسموحة.",
+                        "ForgeFlow Disabled",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Stop);
+                    return false;
+                }
+
                 string message =
-                    "A mandatory ForgeFlow Lite update is required.\n\n" +
-                    $"Current version: {update.CurrentVersion}\n" +
-                    $"Latest version: {update.LatestVersion}\n" +
-                    $"Published: {update.PublishedDate:yyyy-MM-dd}\n\n" +
-                    update.MandatoryReason + "\n\n" +
-                    "The download page will open now. The app will close until the update is installed.";
+                    "يوجد تحديث إجباري لـ ForgeFlow Lite.\n\n" +
+                    $"الإصدار الحالي: {update.CurrentVersion}\n" +
+                    $"آخر إصدار: {update.LatestVersion}\n" +
+                    $"تاريخ النشر: {update.PublishedDate:yyyy-MM-dd}\n\n" +
+                    update.MandatoryReason;
+
+                if (!update.HasDirectInstaller)
+                {
+                    ToolsStatusTextBlock.Text = "Mandatory update required";
+                    ToolsStatusTextBlock.Foreground = Brushes.Orange;
+                    EstimateTextBlock.Text = "No direct setup file was found. Opening the release page.";
+                    EstimateTextBlock.Foreground = Brushes.Orange;
+                    MessageBox.Show(
+                        this,
+                        message + "\n\nلم يتم العثور على ملف تثبيت مباشر داخل الإصدار. سيتم فتح صفحة الإصدار للتنزيل اليدوي.",
+                        "Mandatory Update",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    OpenUpdateUrl(update.ReleaseUrl);
+                    return false;
+                }
+
+                message += "\n\nسيتم تنزيل ملف التثبيت وتشغيله الآن.";
 
                 MessageBox.Show(this, message, "Mandatory Update", MessageBoxButton.OK, MessageBoxImage.Warning);
-                OpenUpdateUrl(update.DownloadUrl);
-                Application.Current.Shutdown();
+                var updateWindow = new UpdateWindow(update)
+                {
+                    Owner = this
+                };
+                updateWindow.ShowDialog();
+
+                if (updateWindow.InstallerStarted)
+                    Application.Current.Shutdown();
+
                 return false;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("Update check failed: " + ex.Message);
                 _updateGatePassed = false;
+                ToolsStatusTextBlock.Text = "Update check failed";
+                ToolsStatusTextBlock.Foreground = Brushes.Orange;
+                EstimateTextBlock.Text = "Start and activation remain locked until mandatory update check succeeds.";
+                EstimateTextBlock.Foreground = Brushes.Orange;
                 if (showNoUpdateMessage)
                 {
-                    MessageBox.Show(this, "Could not check for updates. Please try again later.", "Updates", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    AppendLog("WARNING: Update check failed: " + ex.Message);
+                    MessageBox.Show(this, "تعذر فحص التحديثات. تحقق من الإنترنت ثم حاول مرة أخرى.\n\n" + ex.Message, "Updates", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 return false;
+            }
+            finally
+            {
+                _updateCheckInProgress = false;
+                RefreshActionButtons();
+            }
+        }
+
+        private void ApplySelectedPreset(VideoInterpolator interpolator)
+        {
+            string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+            switch (preset)
+            {
+                case "Fast":
+                    interpolator.PcCrf = 16;
+                    interpolator.PcPreset = "fast";
+                    interpolator.TikTokCrf = 18;
+                    interpolator.TikTokPreset = "fast";
+                    interpolator.TikTokMaxRate = "35M";
+                    interpolator.TikTokBufSize = "70M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
+                case "Quality":
+                    interpolator.PcCrf = 13;
+                    interpolator.PcPreset = "veryslow";
+                    interpolator.TikTokCrf = 15;
+                    interpolator.TikTokPreset = "veryslow";
+                    interpolator.TikTokMaxRate = "50M";
+                    interpolator.TikTokBufSize = "100M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
+                default:
+                    interpolator.PcCrf = 15;
+                    interpolator.PcPreset = "slow";
+                    interpolator.TikTokCrf = 17;
+                    interpolator.TikTokPreset = "slow";
+                    interpolator.TikTokMaxRate = "42M";
+                    interpolator.TikTokBufSize = "84M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
             }
         }
 
@@ -399,14 +724,293 @@ namespace ForgeFlow
             });
         }
 
+        private void UpdateLicenseStatus()
+        {
+            GuardDecision decision = _licenseGuard.EvaluateAccess();
+            if (decision.Allowed && decision.Mode == LicenseAccessMode.Licensed)
+            {
+                LicenseStatusTextBlock.Text = "Activated";
+                LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.LightGreen;
+                return;
+            }
+
+            if (decision.Allowed && decision.Mode == LicenseAccessMode.Trial)
+            {
+                LicenseStatusTextBlock.Text = $"Trial: {decision.Remaining} of {TrialManager.MaxTrialVideos} remaining";
+                LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
+                return;
+            }
+
+            LicenseStatusTextBlock.Text = "Activation required";
+            LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+        }
+
+        private bool EnsureEnoughDiskSpace(string inputPath, string outputPath)
+        {
+            try
+            {
+                long inputSize = new FileInfo(inputPath).Length;
+                long requiredBytes = _selectedVideoInfo != null ? VideoInfo.EstimateRequiredBytes(inputSize) : Math.Max(5L * 1024 * 1024 * 1024, inputSize * 8);
+
+                string outputDir = Path.GetDirectoryName(outputPath) ?? AppContext.BaseDirectory;
+                string tempDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ForgeFlow",
+                    "TempProcessingData");
+
+                long outputFree = 0;
+                long tempFree = 0;
+                bool outputHasSpace = HasFreeSpace(outputDir, requiredBytes, out outputFree);
+                bool tempHasSpace = HasFreeSpace(tempDir, requiredBytes, out tempFree);
+                if (!outputHasSpace || !tempHasSpace)
+                {
+                    string message =
+                        "المساحة المتوفرة قد لا تكفي لمعالجة الفيديو.\n\n" +
+                        $"المطلوب تقريبا: {FormatBytes(requiredBytes)}\n" +
+                        $"مساحة مجلد الإخراج: {FormatBytes(outputFree)}\n" +
+                        $"مساحة المجلد المؤقت: {FormatBytes(tempFree)}\n\n" +
+                        "هل تريد المتابعة على مسؤوليتك؟";
+
+                    return MessageBox.Show(this, message, "Low Disk Space", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("WARNING: Disk space check skipped: " + ex.Message);
+            }
+
+            return true;
+        }
+
+        private bool ValidateInputOutputPaths(string inputPath, string outputPath)
+        {
+            if (inputPath.Length > 240 || outputPath.Length > 240)
+            {
+                FailUI("مسار الملف طويل جدا. انقل الفيديو إلى مجلد أقصر مثل Desktop ثم حاول مرة أخرى.");
+                return false;
+            }
+
+            string outputDir = Path.GetDirectoryName(outputPath) ?? "";
+            if (string.IsNullOrWhiteSpace(outputDir))
+            {
+                FailUI("مسار الإخراج غير صحيح.");
+                return false;
+            }
+
+            if (!SupportedVideoExtensions.Contains(Path.GetExtension(inputPath), StringComparer.OrdinalIgnoreCase))
+            {
+                FailUI("صيغة الفيديو غير مدعومة. الصيغ المدعومة: MP4, MOV, MKV, WEBM, AVI.");
+                return false;
+            }
+
+            if (!string.Equals(Path.GetExtension(outputPath), ".mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                FailUI("مسار الإخراج يجب أن يكون ملف MP4.");
+                return false;
+            }
+
+            if (PathsEqual(inputPath, outputPath))
+            {
+                FailUI("مسار الإخراج لا يمكن أن يكون نفس ملف الإدخال.");
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool HasFreeSpace(string path, long requiredBytes, out long freeBytes)
+        {
+            Directory.CreateDirectory(path);
+            string root = Path.GetPathRoot(Path.GetFullPath(path)) ?? path;
+            var drive = new DriveInfo(root);
+            freeBytes = drive.AvailableFreeSpace;
+            return freeBytes >= requiredBytes;
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            string[] units = { "B", "KB", "MB", "GB", "TB" };
+            double value = Math.Max(0, bytes);
+            int unit = 0;
+            while (value >= 1024 && unit < units.Length - 1)
+            {
+                value /= 1024;
+                unit++;
+            }
+            return $"{value:0.##} {units[unit]}";
+        }
+
+        private ToolCheckResult RefreshToolsStatus(bool showDetails)
+        {
+            _toolStatus = ToolVerifier.Check(AppContext.BaseDirectory, GetAppVersion());
+            ApplyToolStatusToUi(_toolStatus);
+            if (showDetails)
+                AppendLog(_toolStatus.Summary);
+            return _toolStatus;
+        }
+
+        private async Task RunStartupChecksAsync()
+        {
+            ToolsStatusTextBlock.Text = "Running startup checks...";
+            ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
+            VideoInfoTextBlock.Text = "Checking tools...";
+            VideoInfoTextBlock.Foreground = Brushes.Gray;
+            EstimateTextBlock.Text = "Please wait...";
+            EstimateTextBlock.Foreground = Brushes.Gray;
+            StartButton.IsEnabled = false;
+
+            ToolCheckResult result = await Task.Run(() => ToolVerifier.Check(AppContext.BaseDirectory, GetAppVersion()));
+            _toolStatus = result;
+            ApplyToolStatusToUi(result);
+            AppendLog(result.Summary);
+            if (!result.Ready)
+                AppendLog("WARNING: Startup checks require attention. Use Test Tools for full details.");
+        }
+
+        private void ApplyToolStatusToUi(ToolCheckResult result)
+        {
+            ToolsStatusTextBlock.Text = result.Summary;
+            ToolsStatusTextBlock.Foreground = result.Ready ? Brushes.LightGreen : Brushes.Orange;
+
+            string versionState = result.VersionFilePresent
+                ? (result.VersionMatchesAssembly
+                    ? $"version.txt OK ({result.VersionText})"
+                    : $"version.txt mismatch ({result.VersionText} != {GetAppVersion()})")
+                : "version.txt missing";
+
+            string manifestState = result.ManifestPresent
+                ? "tools.sha256 verified"
+                : "tools.sha256 missing";
+
+            string modelState = result.RifeModelPresent
+                ? "rife-v4.26 model found"
+                : "rife-v4.26 model missing";
+
+            VideoInfoTextBlock.Text = $"{manifestState} | {versionState} | {modelState}";
+            VideoInfoTextBlock.Foreground = result.Ready ? Brushes.LightGray : Brushes.Orange;
+
+            EstimateTextBlock.Text = result.Ready
+                ? "Ready before Start: ffmpeg, ffprobe, RIFE executable, and model are available."
+                : "Start is disabled until startup checks pass. Open Test Tools for exact missing or changed items.";
+            EstimateTextBlock.Foreground = result.Ready ? Brushes.LightGray : Brushes.Orange;
+
+            RefreshActionButtons();
+        }
+
+        private bool ConfirmOverwriteOutputs(string outputPath)
+        {
+            var existing = GetExpectedOutputPaths(outputPath)
+                .Where(File.Exists)
+                .Select(Path.GetFileName)
+                .ToArray();
+
+            if (existing.Length == 0)
+                return true;
+
+            string message =
+                "ملفات الإخراج التالية موجودة مسبقا وسيتم استبدالها:\n\n" +
+                string.Join(Environment.NewLine, existing) +
+                "\n\nهل تريد المتابعة؟";
+
+            return MessageBox.Show(this, message, "Overwrite Output Files", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        }
+
+        private static string[] GetExpectedOutputPaths(string outputPath)
+        {
+            string outDir = Path.GetDirectoryName(outputPath) ?? AppContext.BaseDirectory;
+            string baseName = Path.GetFileNameWithoutExtension(outputPath);
+            string ext = Path.GetExtension(outputPath);
+            if (string.IsNullOrWhiteSpace(ext))
+                ext = ".mp4";
+
+            return new[]
+            {
+                Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}"),
+                Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}")
+            };
+        }
+
+        private static void CleanupOldUpdateInstallers()
+        {
+            try
+            {
+                string updateDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ForgeFlow",
+                    "Updates");
+                if (!Directory.Exists(updateDir))
+                    return;
+
+                var installers = Directory.GetFiles(updateDir, "ForgeFlow_Lite_Setup_*.exe")
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .Skip(1);
+
+                foreach (var installer in installers)
+                    installer.Delete();
+            }
+            catch
+            {
+            }
+        }
+
+        private static void CleanupStaleProcessingSessions()
+        {
+            try
+            {
+                string tempRoot = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ForgeFlow",
+                    "TempProcessingData");
+                if (!Directory.Exists(tempRoot))
+                    return;
+
+                foreach (string sessionDir in Directory.GetDirectories(tempRoot, "Session_*"))
+                {
+                    var info = new DirectoryInfo(sessionDir);
+                    if (info.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-1))
+                        info.Delete(true);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void OpenFolder(string folder)
+        {
+            if (!Directory.Exists(folder))
+                return;
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true
+            });
+        }
+
         private void Window_PreviewDragOver(object sender, DragEventArgs e)
         {
             e.Effects = GetDroppedVideoPath(e) == null ? DragDropEffects.None : DragDropEffects.Copy;
+            DropOverlay.Visibility = e.Effects == DragDropEffects.Copy ? Visibility.Visible : Visibility.Collapsed;
+            e.Handled = true;
+        }
+
+        private void Window_PreviewDragEnter(object sender, DragEventArgs e)
+        {
+            DropOverlay.Visibility = GetDroppedVideoPath(e) == null ? Visibility.Collapsed : Visibility.Visible;
+            e.Handled = true;
+        }
+
+        private void Window_PreviewDragLeave(object sender, DragEventArgs e)
+        {
+            DropOverlay.Visibility = Visibility.Collapsed;
             e.Handled = true;
         }
 
         private void Window_PreviewDrop(object sender, DragEventArgs e)
         {
+            DropOverlay.Visibility = Visibility.Collapsed;
             string? videoPath = GetDroppedVideoPath(e);
             if (videoPath == null)
             {
@@ -421,17 +1025,176 @@ namespace ForgeFlow
             e.Handled = true;
         }
 
-        private void SelectInputVideo(string videoPath)
+        private async void SelectInputVideo(string videoPath)
         {
             InputTextBox.Text = videoPath;
-            OutputTextBox.Text = GetDefaultOutputPath(videoPath);
+            if (ShouldReplaceOutputPath())
+                OutputTextBox.Text = GetDefaultOutputPath(videoPath);
+            else
+                RefreshOutputPreview();
+
+            await LoadSelectedVideoInfoAsync(videoPath);
+        }
+
+        private async Task LoadSelectedVideoInfoAsync(string videoPath)
+        {
+            _videoInfoCts?.Cancel();
+            _videoInfoCts?.Dispose();
+            _videoInfoCts = new CancellationTokenSource();
+            CancellationToken token = _videoInfoCts.Token;
+
+            _selectedVideoInfo = null;
+            EstimateTextBlock.Text = "";
+
+            ToolCheckResult tools = _toolStatus ?? RefreshToolsStatus(showDetails: false);
+            if (!File.Exists(tools.FfprobePath))
+            {
+                VideoInfoTextBlock.Text = "Video selected. FFprobe is missing, so details cannot be loaded.";
+                VideoInfoTextBlock.Foreground = Brushes.Orange;
+                return;
+            }
+
+            VideoInfoTextBlock.Text = "Reading video info...";
+            VideoInfoTextBlock.Foreground = Brushes.LightSkyBlue;
+            try
+            {
+                VideoInfo? info = await VideoInfoReader.ReadAsync(tools.FfprobePath, videoPath, token);
+                if (token.IsCancellationRequested || !PathsEqual(InputTextBox.Text.Trim(), videoPath))
+                    return;
+
+                if (info == null)
+                {
+                    VideoInfoTextBlock.Text = "Could not read video info.";
+                    VideoInfoTextBlock.Foreground = Brushes.Orange;
+                    return;
+                }
+
+                _selectedVideoInfo = info;
+                VideoInfoTextBlock.Text = info.Summary;
+                EstimateTextBlock.Text = info.Estimate;
+                VideoInfoTextBlock.Foreground = Brushes.LightGray;
+                RefreshOutputPreview();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                VideoInfoTextBlock.Text = "Could not read video info.";
+                EstimateTextBlock.Text = ex.Message;
+                VideoInfoTextBlock.Foreground = Brushes.Orange;
+            }
         }
 
         private static string GetDefaultOutputPath(string inputPath)
         {
             string directory = Path.GetDirectoryName(inputPath) ?? AppContext.BaseDirectory;
             string name = Path.GetFileNameWithoutExtension(inputPath);
-            return Path.Combine(directory, name + "_ForgeFlow.mp4");
+            return Path.Combine(directory, SanitizeFileName(name) + "_ForgeFlow.mp4");
+        }
+
+        private string GetSuggestedOutputDirectory()
+        {
+            string input = InputTextBox.Text.Trim();
+            if (File.Exists(input))
+                return Path.GetDirectoryName(input) ?? AppContext.BaseDirectory;
+
+            string output = OutputTextBox.Text.Trim();
+            string? outputDir = Path.GetDirectoryName(output);
+            return !string.IsNullOrWhiteSpace(outputDir) && Directory.Exists(outputDir)
+                ? outputDir
+                : Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        }
+
+        private string GetSuggestedOutputFileName()
+        {
+            string input = InputTextBox.Text.Trim();
+            if (File.Exists(input))
+                return Path.GetFileName(GetDefaultOutputPath(input));
+
+            string output = OutputTextBox.Text.Trim();
+            return string.IsNullOrWhiteSpace(Path.GetFileName(output))
+                ? "ForgeFlow_Output.mp4"
+                : Path.GetFileName(output);
+        }
+
+        private bool ShouldReplaceOutputPath()
+        {
+            string output = OutputTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(output))
+                return true;
+
+            string fileName = Path.GetFileName(output);
+            return fileName.Equals("output.mp4", StringComparison.OrdinalIgnoreCase) ||
+                   fileName.Equals("ForgeFlow_Output.mp4", StringComparison.OrdinalIgnoreCase) ||
+                   fileName.EndsWith("_ForgeFlow.mp4", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RefreshOutputPreview()
+        {
+            string output = OutputTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(output) || string.IsNullOrWhiteSpace(Path.GetDirectoryName(output)))
+            {
+                OutputPreviewTextBlock.Text = "Select a video to preview the two customer-ready exports.";
+                OutputPreviewTextBlock.Foreground = Brushes.Gray;
+                return;
+            }
+
+            string input = InputTextBox.Text.Trim();
+            if (!string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                OutputPreviewTextBlock.Text = "Output must be an MP4 path so both exports are predictable.";
+                OutputPreviewTextBlock.Foreground = Brushes.Orange;
+                return;
+            }
+
+            if (File.Exists(input) && PathsEqual(input, output))
+            {
+                OutputPreviewTextBlock.Text = "Output cannot overwrite the original input video.";
+                OutputPreviewTextBlock.Foreground = Brushes.Orange;
+                return;
+            }
+
+            string[] outputs = GetExpectedOutputPaths(output);
+            string sizeHint = _selectedVideoInfo == null
+                ? ""
+                : $" | source {VideoInfo.FormatBytes(_selectedVideoInfo.SizeBytes)}, temp about {VideoInfo.FormatBytes(VideoInfo.EstimateRequiredBytes(_selectedVideoInfo.SizeBytes))}";
+            OutputPreviewTextBlock.Text =
+                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint;
+            OutputPreviewTextBlock.Foreground = Brushes.LightGray;
+        }
+
+        private void RefreshPresetInsight()
+        {
+            string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+            PresetInsightTextBlock.Text = preset switch
+            {
+                "Fast" => "Fast is best for demos and urgent delivery with smaller files.",
+                "Quality" => "Quality is best for portfolio clips and client-facing masters.",
+                _ => "Balanced keeps a practical mix of quality, size, and processing time."
+            };
+        }
+
+        private static bool PathsEqual(string first, string second)
+        {
+            if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second))
+                return false;
+
+            try
+            {
+                return string.Equals(Path.GetFullPath(first), Path.GetFullPath(second), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(first.Trim(), second.Trim(), StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        private static string SanitizeFileName(string name)
+        {
+            foreach (char invalid in Path.GetInvalidFileNameChars())
+                name = name.Replace(invalid, '_');
+            return string.IsNullOrWhiteSpace(name) ? "ForgeFlow_Output" : name.Trim();
         }
 
         private static string? GetDroppedVideoPath(DragEventArgs e)
@@ -451,6 +1214,12 @@ namespace ForgeFlow
                    SupportedVideoExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
         }
 
+        private static string GetAppVersion()
+        {
+            Version? version = Assembly.GetExecutingAssembly().GetName().Version;
+            return version == null ? "1.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
+        }
+
         private void AppendLog(string line)
         {
             var msg = line ?? "";
@@ -467,8 +1236,7 @@ namespace ForgeFlow
             {
                 if (int.TryParse(msg.Replace("PROGRESS:", "").Replace("%", "").Trim(), out int pct))
                 {
-                    MainProgressBar.Value = pct;
-                    PercentLabel.Text = $"{pct}%";
+                    ApplyProgressMood(pct);
                 }
                 return;
             }
@@ -477,6 +1245,7 @@ namespace ForgeFlow
             if (msg.StartsWith("STAGE:"))
             {
                 StageLabel.Text = msg.Replace("STAGE:", "").Trim();
+                ApplyStageMood(StageLabel.Text);
                 LogsTextBox.AppendText(StageLabel.Text + Environment.NewLine);
                 LogsTextBox.ScrollToEnd();
                 return;
@@ -537,17 +1306,87 @@ namespace ForgeFlow
                 || msg.StartsWith("WARNING:")
                 || msg.StartsWith("Unsupported file")
                 || msg.StartsWith("Canceled")
+                || msg.StartsWith("Canceling")
                 || msg.StartsWith("CRITICAL:");
+        }
+
+        private void ApplyProgressMood(int percent)
+        {
+            string face;
+            string text;
+            Brush brush;
+
+            if (percent < 8)
+            {
+                face = "🏃";
+                text = "Launching";
+                brush = Brushes.DeepSkyBlue;
+            }
+            else if (percent < 35)
+            {
+                face = "🏃💨";
+                text = "Running";
+                brush = Brushes.DodgerBlue;
+            }
+            else if (percent < 70)
+            {
+                face = "🏃‍♂️💨";
+                text = "Pushing";
+                brush = Brushes.Orange;
+            }
+            else if (percent < 96)
+            {
+                face = "🏃‍♂️";
+                text = "Almost";
+                brush = Brushes.Gold;
+            }
+            else
+            {
+                face = "🎉";
+                text = "Finishing";
+                brush = Brushes.LightGreen;
+            }
+
+            SetProgressVisual(percent, face, text, brush);
+        }
+
+        private void ApplyStageMood(string stage)
+        {
+            if (stage.Contains("extract", StringComparison.OrdinalIgnoreCase) ||
+                stage.Contains("frame", StringComparison.OrdinalIgnoreCase))
+            {
+                SetProgressMood("🏃", "Preparing", Brushes.DodgerBlue);
+            }
+            else if (stage.Contains("rife", StringComparison.OrdinalIgnoreCase) ||
+                     stage.Contains("interpol", StringComparison.OrdinalIgnoreCase))
+            {
+                SetProgressMood("🏃💨", "Sprint", Brushes.Orange);
+            }
+            else if (stage.Contains("encode", StringComparison.OrdinalIgnoreCase) ||
+                     stage.Contains("mux", StringComparison.OrdinalIgnoreCase))
+            {
+                SetProgressMood("🏃‍♂️", "Polishing", Brushes.Gold);
+            }
+            else if (stage.Contains("done", StringComparison.OrdinalIgnoreCase))
+            {
+                StopRunnerAnimation("🎉");
+                SetProgressVisual(100, "🎉", "Delivered", Brushes.LightGreen);
+            }
         }
 
         private void FailUI(string msg)
         {
             AppendLog("ERROR: " + msg);
+            StopRunnerAnimation("😵");
+            SetProgressMood("😵", "Needs fix", Brushes.OrangeRed);
             MessageBox.Show(msg, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
 
         protected override void OnClosed(EventArgs e)
         {
+            _runnerTimer.Stop();
+            _videoInfoCts?.Cancel();
+            _videoInfoCts?.Dispose();
             _updateChecker.Dispose();
             _cts?.Cancel();
             _cts?.Dispose();

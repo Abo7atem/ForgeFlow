@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\..\Assets\ForgeFlow.ico</ApplicationIcon>
+    <AssemblyName>ForgeFlow_Lite_Setup_1.0.39</AssemblyName>
+    <Version>1.0.39</Version>
+    <FileVersion>1.0.39.0</FileVersion>
+    <AssemblyVersion>1.0.39.0</AssemblyVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\Assets\ForgeFlow.ico" Link="ForgeFlow.ico" />
+    <EmbeddedResource Include="..\..\artifacts\installer\staging\payload.zip" LogicalName="payload.zip" />
+  </ItemGroup>
+</Project>

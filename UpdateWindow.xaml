@@ -1,0 +1,145 @@
+<Window x:Class="ForgeFlow.UpdateWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ForgeFlow Update"
+        Icon="Assets/ForgeFlow.ico"
+        Width="560"
+        Height="420"
+        MinWidth="560"
+        MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#0A0A0A"
+        Foreground="#F5F5F7"
+        FontFamily="Segoe UI">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2C2C2E"/>
+            <Setter Property="Foreground" Value="#F5F5F7"/>
+            <Setter Property="BorderBrush" Value="#3A3A3C"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="120"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="#3A3A3C"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center">
+            <Image Source="Assets/ForgeFlowMark.png"
+                   Width="72"
+                   Height="46"
+                   Stretch="Uniform"
+                   RenderOptions.BitmapScalingMode="HighQuality"
+                   Margin="0,0,14,0"/>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="Mandatory Update Required"
+                           FontSize="20"
+                           FontWeight="Bold"/>
+                <TextBlock Text="ForgeFlow will download, verify, and start the setup file."
+                           Foreground="#A0A0A6"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
+        </StackPanel>
+
+        <TextBlock Grid.Row="2"
+                   x:Name="VersionTextBlock"
+                   Foreground="#D1D1D6"
+                   TextWrapping="Wrap"/>
+
+        <Border Grid.Row="4"
+                Background="#1C1C1E"
+                BorderBrush="#3A3A3C"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <TextBlock x:Name="ReleaseNotesTextBlock"
+                           Foreground="#D1D1D6"
+                           FontFamily="Consolas"
+                           FontSize="12"
+                           TextWrapping="Wrap"/>
+            </ScrollViewer>
+        </Border>
+
+        <Grid Grid.Row="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock x:Name="DownloadStatusTextBlock"
+                       Foreground="#A0A0A6"
+                       Text="Ready to download."/>
+            <TextBlock x:Name="DownloadDetailTextBlock"
+                       Foreground="#6E6E73"
+                       FontSize="11"
+                       HorizontalAlignment="Right"
+                       Text="Verified release installer"
+                       Grid.Row="0"/>
+            <ProgressBar Grid.Row="2"
+                         x:Name="DownloadProgressBar"
+                         Height="8"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="0"
+                         Background="#2C2C2E"
+                         Foreground="#32D74B"/>
+        </Grid>
+
+        <StackPanel Grid.Row="8"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button x:Name="InstallButton"
+                    Content="Download and Install"
+                    Background="#0A84FF"
+                    MinWidth="170"
+                    Margin="0,0,10,0"
+                    Click="InstallButton_Click"/>
+            <Button x:Name="CopyDetailsButton"
+                    Content="Copy Details"
+                    MinWidth="120"
+                    Margin="0,0,10,0"
+                    Click="CopyDetailsButton_Click"/>
+            <Button x:Name="CancelButton"
+                    Content="Exit"
+                    Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

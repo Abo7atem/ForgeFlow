@@ -4,10 +4,14 @@
         Title="ForgeFlow"
         Icon="Assets/ForgeFlow.ico"
         Width="900" Height="630"
+        MinWidth="860" MinHeight="620"
         WindowStartupLocation="CenterScreen"
         Background="#0A0A0A"
         Foreground="#F5F5F7"
+        FontFamily="Segoe UI"
         AllowDrop="True"
+        PreviewDragEnter="Window_PreviewDragEnter"
+        PreviewDragLeave="Window_PreviewDragLeave"
         PreviewDragOver="Window_PreviewDragOver"
         PreviewDrop="Window_PreviewDrop">
 
@@ -308,7 +312,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="14"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
@@ -319,21 +323,47 @@
         </Grid.RowDefinitions>
 
         <!-- Title -->
-        <StackPanel Grid.Row="0"
-                    Orientation="Horizontal"
-                    VerticalAlignment="Center">
-            <Image Source="Assets/ForgeFlow.png"
-                   Width="46"
-                   Height="46"
+        <Grid Grid.Row="0" VerticalAlignment="Center">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Image Source="Assets/ForgeFlowMark.png"
+                   Grid.Column="0"
+                   Width="96"
+                   Height="58"
                    Stretch="Uniform"
-                   Margin="0,0,12,0"/>
-            <TextBlock Text="ForgeFlow"
-                       FontSize="22"
-                       FontWeight="SemiBold"
-                       Foreground="#F5F5F7"
-                       FontFamily="Segoe UI"
-                       VerticalAlignment="Center"/>
-        </StackPanel>
+                   RenderOptions.BitmapScalingMode="HighQuality"
+                   SnapsToDevicePixels="True"
+                   Margin="0,0,14,0"/>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock Text="ForgeFlow"
+                           FontSize="24"
+                           FontWeight="SemiBold"
+                           Foreground="#F5F5F7"/>
+                <TextBlock Text="Video 60FPS + TikTok30FPS"
+                           Foreground="#8E8E93"
+                           FontSize="12"
+                           Margin="1,3,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Right">
+                <TextBlock x:Name="LicenseStatusTextBlock"
+                           Text="Checking license..."
+                           Foreground="#8E8E93"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           TextAlignment="Right"/>
+                <TextBlock x:Name="VersionTextBlock"
+                           Text="v..."
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextAlignment="Right"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
+        </Grid>
 
         <!-- Input Row -->
         <Grid Grid.Row="2">
@@ -346,7 +376,8 @@
             <TextBlock Grid.Column="0" Text="Input"
                        VerticalAlignment="Center"
                        Foreground="#8E8E93"/>
-            <TextBox Grid.Column="1" x:Name="InputTextBox" Height="34"/>
+            <TextBox Grid.Column="1" x:Name="InputTextBox" Height="34"
+                     ToolTip="Drop a video here or anywhere in the ForgeFlow window."/>
             <Button Grid.Column="3" Content="Browse"
                     Height="34" Click="BrowseInput_Click"/>
         </Grid>
@@ -368,33 +399,146 @@
                     Height="34" Click="BrowseOutput_Click"/>
         </Grid>
 
+        <Grid Grid.Row="5" Margin="110,4,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock x:Name="ToolsStatusTextBlock"
+                           Text="Checking tools..."
+                           Foreground="#6E6E73"
+                           FontSize="11"/>
+                <TextBlock x:Name="VideoInfoTextBlock"
+                           Text="Original size preserved | RIFE v4.26 | Two outputs only"
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           Margin="0,3,0,0"/>
+                <TextBlock x:Name="EstimateTextBlock"
+                           Text=""
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           Margin="0,3,0,0"/>
+                <TextBlock x:Name="OutputPreviewTextBlock"
+                           Text="Select a video to preview the two customer-ready exports."
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,3,0,0"/>
+                <TextBlock x:Name="PresetInsightTextBlock"
+                           Text="Balanced keeps a practical mix of quality, size, and processing time."
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,3,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top">
+                <Button Content="Test Tools"
+                        Height="26"
+                        MinWidth="82"
+                        Padding="10,0"
+                        FontSize="11"
+                        Margin="8,0,0,0"
+                        Click="TestToolsButton_Click"/>
+                <ComboBox x:Name="PresetComboBox"
+                          Width="92"
+                          Height="26"
+                          FontSize="11"
+                          Margin="6,0,0,0"
+                          SelectionChanged="PresetComboBox_SelectionChanged"
+                          SelectedIndex="1">
+                    <ComboBoxItem Content="Fast"/>
+                    <ComboBoxItem Content="Balanced"/>
+                    <ComboBoxItem Content="Quality"/>
+                </ComboBox>
+                <Button Content="About"
+                        Height="26"
+                        MinWidth="64"
+                        Padding="10,0"
+                        FontSize="11"
+                        Margin="6,0,0,0"
+                        Click="AboutButton_Click"/>
+            </StackPanel>
+        </Grid>
+
         <!-- Log Box -->
         <Border Grid.Row="6"
                 Background="#1C1C1E"
                 BorderBrush="#3A3A3C"
                 BorderThickness="1"
                 CornerRadius="10">
-            <TextBox x:Name="LogsTextBox"
-                     Background="Transparent"
-                     BorderThickness="0"
-                     VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto"
-                     TextWrapping="NoWrap"
-                     AcceptsReturn="True"
-                     IsReadOnly="True"
-                     FontFamily="Menlo, Consolas, monospace"
-                     FontSize="12"
-                     Foreground="#98989D"
-                     Padding="12,10"
-                     Margin="0"/>
+            <Grid>
+                <TextBox x:Name="LogsTextBox"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         TextWrapping="NoWrap"
+                         AcceptsReturn="True"
+                         IsReadOnly="True"
+                         FontFamily="Menlo, Consolas, monospace"
+                         FontSize="12"
+                         Foreground="#98989D"
+                         Padding="12,10"
+                         Margin="0"/>
+
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Margin="0,10,10,0">
+                    <Button Content="Open Folder"
+                            Height="26"
+                            MinWidth="92"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="0,0,6,0"
+                            Click="OpenOutputFolderButton_Click"/>
+                    <Button Content="Copy Log"
+                            Height="26"
+                            MinWidth="78"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="0,0,6,0"
+                            Click="CopyLogButton_Click"/>
+                    <Button Content="Clear"
+                            Height="26"
+                            MinWidth="64"
+                            Padding="10,0"
+                            FontSize="11"
+                            Click="ClearLogButton_Click"/>
+                </StackPanel>
+
+                <Border x:Name="DropOverlay"
+                        Visibility="Collapsed"
+                        Background="#CC101014"
+                        BorderBrush="#0A84FF"
+                        BorderThickness="2"
+                        CornerRadius="10"
+                        Margin="10">
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="Drop video to ForgeFlow"
+                                   FontSize="20"
+                                   FontWeight="SemiBold"
+                                   TextAlignment="Center"
+                                   Foreground="#FFFFFF"/>
+                        <TextBlock Text="Output will be created beside the original video."
+                                   Foreground="#A0A0A6"
+                                   TextAlignment="Center"
+                                   Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Border>
 
         <!-- Progress Bar -->
         <Grid Grid.Row="8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="6"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="24"/>
             </Grid.RowDefinitions>
 
             <!-- Label row: Stage + Percent -->
@@ -411,10 +555,64 @@
             </Grid>
 
             <!-- Progress Line -->
-            <ProgressBar Grid.Row="2"
+            <ProgressBar Grid.Row="1"
                          x:Name="MainProgressBar"
                          Style="{StaticResource VideoProgressStyle}"
+                         VerticalAlignment="Center"
                          Minimum="0" Maximum="100" Value="0"/>
+
+            <Canvas x:Name="ProgressMoodTrack"
+                    Grid.Row="1"
+                    Height="24"
+                    Margin="0,0,0,0"
+                    SizeChanged="ProgressMoodTrack_SizeChanged"
+                    ClipToBounds="False">
+                <Border x:Name="ProgressMoodBubble"
+                        Canvas.Left="0"
+                        Width="42"
+                        Height="24"
+                        Background="Transparent"
+                        BorderThickness="0">
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <Grid Width="34"
+                              Height="22">
+                            <Grid.RenderTransform>
+                                <TranslateTransform x:Name="RunnerBounceTransform"/>
+                            </Grid.RenderTransform>
+                            <Image x:Name="RunnerIconImage"
+                                   Width="20"
+                                   Height="20"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   Source="Assets/Emoji/runner.png"
+                                   Stretch="Uniform"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                   RenderTransformOrigin="0.5,0.5">
+                                <Image.RenderTransform>
+                                    <ScaleTransform ScaleX="-1"/>
+                                </Image.RenderTransform>
+                            </Image>
+                            <Image x:Name="RunnerDashImage"
+                                   Width="14"
+                                   Height="14"
+                                   HorizontalAlignment="Left"
+                                   VerticalAlignment="Center"
+                                   Source="Assets/Emoji/dash.png"
+                                   Stretch="Uniform"
+                                   Visibility="Collapsed"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                        </Grid>
+                        <TextBlock x:Name="ProgressMoodText"
+                                   Text="Ready"
+                                   Visibility="Collapsed"
+                                   Foreground="#D1D1D6"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Border>
+            </Canvas>
         </Grid>
 
         <!-- Owner Rights / Social Links -->

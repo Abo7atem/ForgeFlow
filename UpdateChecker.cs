@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,7 +9,7 @@ namespace ForgeFlow
 {
     public sealed class UpdateChecker : IDisposable
     {
-        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlow/releases/latest";
+        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlowAPP/releases/latest";
         private readonly HttpClient _httpClient;
 
         public UpdateChecker()
@@ -16,6 +17,10 @@ namespace ForgeFlow
             _httpClient = new HttpClient();
             _httpClient.Timeout = TimeSpan.FromSeconds(10);
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("ForgeFlow-Lite");
+            _httpClient.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
+            _httpClient.DefaultRequestHeaders.Pragma.ParseAdd("no-cache");
+            _httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            _httpClient.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
         }
 
         public async Task<UpdateInfo?> CheckForUpdatesAsync()
@@ -34,10 +39,28 @@ namespace ForgeFlow
 
             Version current = GetCurrentVersion();
             Version latest = ParseVersion(release.TagName ?? release.Name ?? "");
+            string reason = GetMandatoryReason(release.Body ?? "", current);
+            if (IsAppDisabled(release.Body ?? "", current, out string disabledReason))
+            {
+                return new UpdateInfo
+                {
+                    CurrentVersion = current.ToString(),
+                    LatestVersion = latest.ToString(),
+                    ReleaseName = release.Name ?? release.TagName ?? "Latest release",
+                    ReleaseNotes = release.Body ?? "",
+                    PublishedDate = release.PublishedAt,
+                    ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
+                    DownloadUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
+                    IsMandatory = true,
+                    IsBlocked = true,
+                    MandatoryReason = disabledReason
+                };
+            }
+
             if (latest <= current)
                 return null;
 
-            string reason = GetMandatoryReason(release.Body ?? "", current);
+            GitHubAsset? asset = GetInstallerAsset(release);
             return new UpdateInfo
             {
                 CurrentVersion = current.ToString(),
@@ -45,7 +68,12 @@ namespace ForgeFlow
                 ReleaseName = release.Name ?? release.TagName ?? "Latest release",
                 ReleaseNotes = release.Body ?? "",
                 PublishedDate = release.PublishedAt,
-                DownloadUrl = GetDownloadUrl(release),
+                ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
+                DownloadUrl = asset?.BrowserDownloadUrl ?? "",
+                DownloadFileName = asset?.Name ?? "",
+                DownloadSize = asset?.Size ?? 0,
+                DownloadDigest = asset?.Digest ?? "",
+                HasDirectInstaller = asset != null,
                 IsMandatory = true,
                 MandatoryReason = reason
             };
@@ -103,6 +131,45 @@ namespace ForgeFlow
             return "A newer version is available and must be installed before using ForgeFlow Lite.";
         }
 
+        private static bool IsAppDisabled(string releaseNotes, Version currentVersion, out string reason)
+        {
+            reason = "";
+            foreach (string raw in releaseNotes.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string line = raw.Trim().Trim('`', '*', '-', ' ');
+                if (line.Equals("disabled=true", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("app_disabled=true", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("block_all=true", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("[disabled]", StringComparison.OrdinalIgnoreCase))
+                {
+                    reason = "This ForgeFlow Lite build has been disabled by the publisher.";
+                    return true;
+                }
+
+                if (!line.StartsWith("blocked_versions", StringComparison.OrdinalIgnoreCase) &&
+                    !line.StartsWith("revoked_versions", StringComparison.OrdinalIgnoreCase) &&
+                    !line.StartsWith("disabled_versions", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int separator = line.IndexOfAny(new[] { '=', ':' });
+                if (separator < 0 || separator >= line.Length - 1)
+                    continue;
+
+                string[] versions = line[(separator + 1)..]
+                    .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string versionText in versions)
+                {
+                    if (ParseVersion(versionText.Trim('`', '"', '\'')) == currentVersion)
+                    {
+                        reason = $"This ForgeFlow Lite version ({currentVersion}) has been disabled by the publisher.";
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private static bool TryReadMinimumSupportedVersion(string releaseNotes, out Version? version)
         {
             version = null;
@@ -127,20 +194,23 @@ namespace ForgeFlow
             return false;
         }
 
-        private static string GetDownloadUrl(GitHubRelease release)
+        private static GitHubAsset? GetInstallerAsset(GitHubRelease release)
         {
-            var asset = release.Assets?
-                .OrderByDescending(a => IsInstallerAsset(a.Name))
+            return release.Assets?
+                .Where(a => GetInstallerAssetPriority(a.Name) > 0)
+                .OrderByDescending(a => GetInstallerAssetPriority(a.Name))
                 .FirstOrDefault(a => !string.IsNullOrWhiteSpace(a.BrowserDownloadUrl));
-
-            return asset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest";
         }
 
-        private static bool IsInstallerAsset(string? name)
+        private static int GetInstallerAssetPriority(string? name)
         {
-            if (string.IsNullOrWhiteSpace(name)) return false;
+            if (string.IsNullOrWhiteSpace(name)) return 0;
             string lower = name.ToLowerInvariant();
-            return lower.EndsWith(".exe") || lower.EndsWith(".msi") || lower.EndsWith(".zip");
+            if (lower.StartsWith("forgeflow_lite_setup_") && lower.EndsWith(".exe")) return 100;
+            if (lower.Contains("forgeflow") && lower.Contains("setup") && lower.EndsWith(".exe")) return 90;
+            if (lower.EndsWith(".exe")) return 80;
+            if (lower.EndsWith(".msi")) return 60;
+            return 0;
         }
 
         public void Dispose() => _httpClient.Dispose();
@@ -153,8 +223,14 @@ namespace ForgeFlow
         public string ReleaseName { get; init; } = "";
         public string ReleaseNotes { get; init; } = "";
         public DateTime PublishedDate { get; init; }
+        public string ReleaseUrl { get; init; } = "";
         public string DownloadUrl { get; init; } = "";
+        public string DownloadFileName { get; init; } = "";
+        public long DownloadSize { get; init; }
+        public string DownloadDigest { get; init; } = "";
+        public bool HasDirectInstaller { get; init; }
         public bool IsMandatory { get; init; }
+        public bool IsBlocked { get; init; }
         public string MandatoryReason { get; init; } = "";
     }
 
@@ -187,7 +263,13 @@ namespace ForgeFlow
         [JsonPropertyName("name")]
         public string? Name { get; set; }
 
+        [JsonPropertyName("size")]
+        public long Size { get; set; }
+
         [JsonPropertyName("browser_download_url")]
         public string? BrowserDownloadUrl { get; set; }
+
+        [JsonPropertyName("digest")]
+        public string? Digest { get; set; }
     }
 }

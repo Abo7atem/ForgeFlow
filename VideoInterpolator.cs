@@ -179,14 +179,14 @@ namespace VideoProcessing
                     progressCallback?.Invoke("Pre-filter done.");
                 }
 
-                // Stage 1/5 â€“ Extract frames (0â†’20%)
+                // Stage 1/5: extract frames (0 to 20%).
                 progressCallback?.Invoke("STAGE:1/5 Extracting frames");
                 progressCallback?.Invoke("PROGRESS:0%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
                 var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
                 if (!extract.Success) return extract;
 
-                // Stage 2/5 â€“ RIFE interpolation (20â†’70%)
+                // Stage 2/5: RIFE interpolation (20 to 70%).
                 progressCallback?.Invoke("STAGE:2/5 RIFE interpolation");
                 progressCallback?.Invoke("PROGRESS:20%");
                 int _pollInputCount = Directory.GetFiles(inputFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
@@ -287,7 +287,7 @@ namespace VideoProcessing
 
         private string GetEffectiveTikTokRateControl()
         {
-            // ظ„ظˆ ط£ظٹ ط¬ط²ط، ظ…ظ† ط§ظ„ظ…ط´ط±ظˆط¹ ظ„ط³ظ‡ ظٹط¶ط¨ط· TikTokRateControl ظٹط¯ظˆظٹظ‹ط§ (ظ‚ط¯ظٹظ…)طŒ ط§ط³طھط®ط¯ظ…ظ‡ ظƒظ…ط§ ظ‡ظˆ ظ„ظ„طھظˆط§ظپظ‚.
+            // Keep backward compatibility if older code sets the full rate-control string manually.
             if (!string.IsNullOrWhiteSpace(TikTokRateControl))
                 return TikTokRateControl.Trim();
 
@@ -324,10 +324,9 @@ namespace VideoProcessing
             var args = new StringBuilder();
             args.Append("-y -nostdin ");
 
+            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
             if (audioOffset.HasValue && audioOffset.Value > 0)
                 args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
-
-            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
             args.Append($"-i {QuotePath(originalVideoPath)} ");
             args.Append("-map 0:v:0 -map 1:a? ");
 
@@ -335,7 +334,7 @@ namespace VideoProcessing
             args.Append($"-c:v libx264 -crf {PcCrf} -preset {PcPreset} -tune {PcTune} -profile:v high -pix_fmt yuv420p ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
             args.Append(QuotePath(outputPath));
 
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
@@ -360,10 +359,9 @@ namespace VideoProcessing
             var args = new StringBuilder();
             args.Append("-y -nostdin ");
 
+            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
             if (audioOffset.HasValue && audioOffset.Value > 0)
                 args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
-
-            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
             args.Append($"-i {QuotePath(originalVideoPath)} ");
             args.Append("-map 0:v:0 -map 1:a? ");
 
@@ -373,7 +371,7 @@ namespace VideoProcessing
             args.Append($"-r {outFps} -vsync cfr ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
             args.Append(QuotePath(outputPath));
 
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
@@ -391,7 +389,7 @@ namespace VideoProcessing
             args.Append("-y -nostdin ");
             args.Append($"-itsscale {inputTimestampScale.ToString(CultureInfo.InvariantCulture)} ");
             args.Append($"-i {QuotePath(inputPath)} ");
-            args.Append("-c:v copy -c:a copy -movflags +faststart -loglevel warning ");
+            args.Append("-c:v copy -c:a copy -map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
             args.Append(QuotePath(outputPath));
 
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
@@ -423,6 +421,8 @@ namespace VideoProcessing
             Action<string>? progressCallback = null,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var psi = new ProcessStartInfo
             {
                 FileName = executablePath,
@@ -435,6 +435,7 @@ namespace VideoProcessing
             };
 
             using var process = new Process { StartInfo = psi };
+            using var cancellationRegistration = cancellationToken.Register(() => KillProcessTree(process));
             var stdOut = new StringBuilder();
             var stdErr = new StringBuilder();
 
@@ -467,10 +468,31 @@ namespace VideoProcessing
                 process.BeginErrorReadLine();
             }
 
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                KillProcessTree(process);
+                throw;
+            }
+
             if (!showWindow) await Task.Delay(150, CancellationToken.None).ConfigureAwait(false);
 
             return new ProcessExecutionResult(process.ExitCode, stdOut.ToString(), stdErr.ToString());
+        }
+
+        private static void KillProcessTree(Process process)
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+            }
         }
 
         private async Task<(double? Fps, ProcessExecutionResult Result)> GetOriginalVideoFpsAsync(

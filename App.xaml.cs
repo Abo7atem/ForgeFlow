@@ -1,4 +1,5 @@
-﻿using System.IO;
+using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -7,12 +8,41 @@ namespace ForgeFlow
 {
     public partial class App : Application
     {
+        private Mutex? _singleInstanceMutex;
+
         protected override void OnStartup(StartupEventArgs e)
         {
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+
+            _singleInstanceMutex = new Mutex(true, @"Local\ForgeFlowLiteSingleInstance", out bool createdNew);
+            if (!createdNew)
+            {
+                MessageBox.Show(
+                    "ForgeFlow يعمل بالفعل. أغلق النافذة المفتوحة أولاً.",
+                    "ForgeFlow",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                Shutdown();
+                return;
+            }
+
             base.OnStartup(e);
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            try
+            {
+                _singleInstanceMutex?.ReleaseMutex();
+                _singleInstanceMutex?.Dispose();
+            }
+            catch
+            {
+            }
+
+            base.OnExit(e);
         }
 
         private static void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
