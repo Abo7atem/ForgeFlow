@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -9,7 +10,7 @@ namespace ForgeFlow
 {
     public sealed class UpdateChecker : IDisposable
     {
-        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlowAPP/releases/latest";
+        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlow/releases/latest";
         private readonly HttpClient _httpClient;
 
         public UpdateChecker()
@@ -26,6 +27,9 @@ namespace ForgeFlow
         public async Task<UpdateInfo?> CheckForUpdatesAsync()
         {
             using var response = await _httpClient.GetAsync(GitHubApiUrl).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                return null;
+
             response.EnsureSuccessStatusCode();
 
             string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -49,8 +53,8 @@ namespace ForgeFlow
                     ReleaseName = release.Name ?? release.TagName ?? "Latest release",
                     ReleaseNotes = release.Body ?? "",
                     PublishedDate = release.PublishedAt,
-                    ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
-                    DownloadUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
+                    ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
+                    DownloadUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
                     IsMandatory = true,
                     IsBlocked = true,
                     MandatoryReason = disabledReason
@@ -68,7 +72,7 @@ namespace ForgeFlow
                 ReleaseName = release.Name ?? release.TagName ?? "Latest release",
                 ReleaseNotes = release.Body ?? "",
                 PublishedDate = release.PublishedAt,
-                ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest",
+                ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
                 DownloadUrl = asset?.BrowserDownloadUrl ?? "",
                 DownloadFileName = asset?.Name ?? "",
                 DownloadSize = asset?.Size ?? 0,

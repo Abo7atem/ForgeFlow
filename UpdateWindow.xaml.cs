@@ -139,6 +139,7 @@ namespace ForgeFlow
                     TryDelete(filePath);
                     MessageBox.Show(this, verifyError, "Update Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     InstallButton.IsEnabled = true;
+                    CancelButton.Content = "Exit";
                     return;
                 }
 

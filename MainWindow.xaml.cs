@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Media;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -29,6 +30,7 @@ namespace ForgeFlow
         private readonly LicenseManager _licenseManager;
         private readonly LicenseGuard _licenseGuard;
         private readonly UpdateChecker _updateChecker;
+        private readonly AppSettings _settings;
         private bool _updateGatePassed;
         private bool _updateCheckInProgress;
         private ToolCheckResult? _toolStatus;
@@ -49,6 +51,7 @@ namespace ForgeFlow
             _licenseManager = new LicenseManager();
             _licenseGuard = new LicenseGuard(_licenseManager);
             _updateChecker = new UpdateChecker();
+            _settings = AppSettings.Load();
             _runnerTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(170) };
             _runnerTimer.Tick += (_, _) => AdvanceRunnerFrame();
             InputTextBox.TextChanged += (_, _) =>
@@ -63,6 +66,7 @@ namespace ForgeFlow
             };
             StartButton.IsEnabled = false;
             ActivationButton.IsEnabled = false;
+            CompletionSoundCheckBox.IsChecked = _settings.PlayCompletionSound;
             ToolsStatusTextBlock.Text = "Running startup checks...";
             ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
             VideoInfoTextBlock.Text = "Verifying tools, integrity manifest, version, and rife-v4.26 model";
@@ -90,11 +94,15 @@ namespace ForgeFlow
         {
             var ofd = new OpenFileDialog
             {
-                Filter = "Video Files|*.mp4;*.mov;*.mkv;*.webm;*.avi|All Files|*.*"
+                Filter = "Video Files|*.mp4;*.mov;*.mkv;*.webm;*.avi|All Files|*.*",
+                InitialDirectory = GetExistingDirectoryOrDefault(_settings.LastInputDirectory)
             };
 
             if (ofd.ShowDialog() == true)
+            {
+                SaveLastInputDirectory(ofd.FileName);
                 SelectInputVideo(ofd.FileName);
+            }
         }
 
         private void BrowseOutput_Click(object sender, RoutedEventArgs e)
@@ -108,7 +116,10 @@ namespace ForgeFlow
             };
 
             if (sfd.ShowDialog() == true)
+            {
                 OutputTextBox.Text = sfd.FileName;
+                SaveLastOutputDirectory(sfd.FileName);
+            }
         }
 
         private async void StartButton_Click(object sender, RoutedEventArgs e)
@@ -120,9 +131,8 @@ namespace ForgeFlow
             _lastOutput = output;
 
             LogsTextBox.Clear();
-            SetProgressVisual(0, "🏃", "Warming up", Brushes.DeepSkyBlue);
-            StartRunnerAnimation();
-            StageLabel.Text = "Starting...";
+            SetProgressVisual(0, "🏃", "Ready", Brushes.DeepSkyBlue);
+            StageLabel.Text = "Ready";
 
             if (!File.Exists(input))
             {
@@ -152,6 +162,9 @@ namespace ForgeFlow
             if (!ConfirmOverwriteOutputs(output))
                 return;
 
+            if (!ConfirmProcessingSummary(input, output))
+                return;
+
             if (!await EnsureUpdateGateAsync())
                 return;
 
@@ -169,6 +182,9 @@ namespace ForgeFlow
             if (!string.IsNullOrWhiteSpace(outDir) && !Directory.Exists(outDir))
                 Directory.CreateDirectory(outDir);
 
+            SetProgressVisual(0, "🏃", "Warming up", Brushes.DeepSkyBlue);
+            StartRunnerAnimation();
+            StageLabel.Text = "Starting...";
             SetBusy(true);
             RetryButton.IsEnabled = false;
 
@@ -242,7 +258,7 @@ namespace ForgeFlow
 
                 if (!res.Success)
                 {
-                    FailUI("فشل:\n" + (string.IsNullOrWhiteSpace(res.StandardError) ? res.StandardOutput : res.StandardError));
+                    FailUI("فشل:\n" + BuildFriendlyProcessingError(res.StandardError, res.StandardOutput));
                     RetryButton.IsEnabled = true;
                     return;
                 }
@@ -258,6 +274,7 @@ namespace ForgeFlow
                 StopRunnerAnimation("🎉");
                 SetProgressVisual(100, "🎉", "Delivered", Brushes.LightGreen);
                 StageLabel.Text = "Done ✓";
+                PlayCompletionSound(success: true);
                 UpdateLicenseStatus();
 
                 string[] produced = GetExpectedOutputPaths(output);
@@ -274,13 +291,14 @@ namespace ForgeFlow
                 AppendLog("Canceled by user.");
                 StopRunnerAnimation("😮‍💨");
                 SetProgressMood("😮‍💨", "Paused", Brushes.Goldenrod);
+                PlayCompletionSound(success: false);
                 MessageBox.Show("تم إلغاء العملية.", "Canceled", MessageBoxButton.OK, MessageBoxImage.Information);
                 RetryButton.IsEnabled = true;
             }
             catch (Exception ex)
             {
                 AppendLog("CRITICAL: " + ex);
-                FailUI("خطأ:\n" + ex.Message);
+                FailUI("خطأ:\n" + BuildFriendlyProcessingError(ex.Message, ""));
                 RetryButton.IsEnabled = true;
             }
             finally
@@ -359,6 +377,28 @@ namespace ForgeFlow
             string text = LogsTextBox.Text;
             if (!string.IsNullOrWhiteSpace(text))
                 Clipboard.SetText(text);
+        }
+
+        private void ReportIssueButton_Click(object sender, RoutedEventArgs e)
+        {
+            string reportPath = WriteSupportReport();
+            Clipboard.SetText(reportPath);
+            OpenFolder(Path.GetDirectoryName(reportPath) ?? AppContext.BaseDirectory);
+            MessageBox.Show(
+                this,
+                "تم إنشاء تقرير الدعم ونسخ مساره إلى الحافظة:\n\n" + reportPath,
+                "Support Report",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
+        private void CompletionSoundCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_settings == null)
+                return;
+
+            _settings.PlayCompletionSound = CompletionSoundCheckBox.IsChecked == true;
+            _settings.Save();
         }
 
         private void OpenOutputFolderButton_Click(object sender, RoutedEventArgs e)
@@ -717,11 +757,17 @@ namespace ForgeFlow
             if (string.IsNullOrWhiteSpace(url))
                 return;
 
-            Process.Start(new ProcessStartInfo
+            try
             {
-                FileName = url,
-                UseShellExecute = true
-            });
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+            }
         }
 
         private void UpdateLicenseStatus()
@@ -782,6 +828,28 @@ namespace ForgeFlow
             return true;
         }
 
+        private bool ConfirmProcessingSummary(string inputPath, string outputPath)
+        {
+            string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+            string[] outputs = GetExpectedOutputPaths(outputPath);
+            string inputName = Path.GetFileName(inputPath);
+            string videoInfo = _selectedVideoInfo?.Summary ?? "Video details: not loaded";
+            string estimate = _selectedVideoInfo?.Estimate ?? "Estimate: depends on video and GPU";
+
+            string message =
+                "ملخص المعالجة قبل البدء:\n\n" +
+                $"الفيديو: {inputName}\n" +
+                $"الوضع: {preset}\n" +
+                $"{videoInfo}\n" +
+                $"{estimate}\n\n" +
+                "سيتم إنشاء ملفين:\n" +
+                "- " + Path.GetFileName(outputs[0]) + "\n" +
+                "- " + Path.GetFileName(outputs[1]) + "\n\n" +
+                "هل تريد بدء المعالجة؟";
+
+            return MessageBox.Show(this, message, "Processing Summary", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
+        }
+
         private bool ValidateInputOutputPaths(string inputPath, string outputPath)
         {
             if (inputPath.Length > 240 || outputPath.Length > 240)
@@ -794,6 +862,12 @@ namespace ForgeFlow
             if (string.IsNullOrWhiteSpace(outputDir))
             {
                 FailUI("مسار الإخراج غير صحيح.");
+                return false;
+            }
+
+            if (IsProtectedOrTemporaryOutputDirectory(outputDir))
+            {
+                FailUI("اختر مجلد إخراج عادي مثل Desktop أو Videos. لا تستخدم مجلد النظام أو مجلد ForgeFlow المؤقت.");
                 return false;
             }
 
@@ -816,6 +890,40 @@ namespace ForgeFlow
             }
 
             return true;
+        }
+
+        private static bool IsProtectedOrTemporaryOutputDirectory(string outputDir)
+        {
+            try
+            {
+                string full = Path.GetFullPath(outputDir);
+                string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                string temp = Path.GetTempPath();
+                string forgeFlowTemp = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ForgeFlow",
+                    "TempProcessingData");
+
+                return IsSameOrChildPath(full, windows) ||
+                       IsSameOrChildPath(full, temp) ||
+                       IsSameOrChildPath(full, forgeFlowTemp);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static bool IsSameOrChildPath(string candidate, string parent)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(parent))
+                return false;
+
+            string fullCandidate = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fullParent = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return fullCandidate.Equals(fullParent, StringComparison.OrdinalIgnoreCase) ||
+                   fullCandidate.StartsWith(fullParent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                   fullCandidate.StartsWith(fullParent + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasFreeSpace(string path, long requiredBytes, out long freeBytes)
@@ -982,11 +1090,17 @@ namespace ForgeFlow
             if (!Directory.Exists(folder))
                 return;
 
-            Process.Start(new ProcessStartInfo
+            try
             {
-                FileName = folder,
-                UseShellExecute = true
-            });
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = folder,
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+            }
         }
 
         private void Window_PreviewDragOver(object sender, DragEventArgs e)
@@ -1020,6 +1134,7 @@ namespace ForgeFlow
             }
 
             SelectInputVideo(videoPath);
+            SaveLastInputDirectory(videoPath);
             AppendLog("Selected: " + Path.GetFileName(videoPath));
             AppendLog("Output: " + OutputTextBox.Text);
             e.Handled = true;
@@ -1033,6 +1148,8 @@ namespace ForgeFlow
             else
                 RefreshOutputPreview();
 
+            SaveLastInputDirectory(videoPath);
+            SaveLastOutputDirectory(OutputTextBox.Text);
             await LoadSelectedVideoInfoAsync(videoPath);
         }
 
@@ -1093,6 +1210,35 @@ namespace ForgeFlow
             return Path.Combine(directory, SanitizeFileName(name) + "_ForgeFlow.mp4");
         }
 
+        private void SaveLastInputDirectory(string filePath)
+        {
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+            {
+                _settings.LastInputDirectory = directory;
+                _settings.Save();
+            }
+        }
+
+        private void SaveLastOutputDirectory(string filePath)
+        {
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                _settings.LastOutputDirectory = directory;
+                _settings.Save();
+            }
+        }
+
+        private static string GetExistingDirectoryOrDefault(string? directory)
+        {
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                return directory;
+
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            return Directory.Exists(desktop) ? desktop : AppContext.BaseDirectory;
+        }
+
         private string GetSuggestedOutputDirectory()
         {
             string input = InputTextBox.Text.Trim();
@@ -1103,7 +1249,7 @@ namespace ForgeFlow
             string? outputDir = Path.GetDirectoryName(output);
             return !string.IsNullOrWhiteSpace(outputDir) && Directory.Exists(outputDir)
                 ? outputDir
-                : Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                : GetExistingDirectoryOrDefault(_settings.LastOutputDirectory);
         }
 
         private string GetSuggestedOutputFileName()
@@ -1289,6 +1435,82 @@ namespace ForgeFlow
             }
         }
 
+        private string WriteSupportReport()
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ForgeFlow",
+                "Logs");
+            Directory.CreateDirectory(dir);
+
+            string path = Path.Combine(dir, $"support-report-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+            string input = InputTextBox.Text.Trim();
+            string output = OutputTextBox.Text.Trim();
+            string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+
+            string report =
+                "ForgeFlow Support Report\r\n" +
+                "========================\r\n" +
+                $"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n" +
+                $"Version: {GetAppVersion()}\r\n" +
+                $"OS: {Environment.OSVersion}\r\n" +
+                $"Machine: {Environment.MachineName}\r\n" +
+                $"User: {Environment.UserName}\r\n" +
+                $"License: {LicenseStatusTextBlock.Text}\r\n" +
+                $"Preset: {preset}\r\n" +
+                $"Input: {input}\r\n" +
+                $"Output: {output}\r\n" +
+                $"Video info: {_selectedVideoInfo?.Summary ?? "not loaded"}\r\n" +
+                $"Tools: {_toolStatus?.Summary ?? "not checked"}\r\n\r\n" +
+                "Log\r\n" +
+                "---\r\n" +
+                LogsTextBox.Text;
+
+            File.WriteAllText(path, report);
+            return path;
+        }
+
+        private void PlayCompletionSound(bool success)
+        {
+            if (CompletionSoundCheckBox.IsChecked != true)
+                return;
+
+            try
+            {
+                if (success)
+                    SystemSounds.Asterisk.Play();
+                else
+                    SystemSounds.Exclamation.Play();
+            }
+            catch
+            {
+            }
+        }
+
+        private static string BuildFriendlyProcessingError(string standardError, string standardOutput)
+        {
+            string raw = string.IsNullOrWhiteSpace(standardError) ? standardOutput : standardError;
+            if (string.IsNullOrWhiteSpace(raw))
+                return "فشلت المعالجة بدون رسالة خطأ واضحة. جرّب ملفًا آخر أو افحص الأدوات من زر Test Tools.";
+
+            string lower = raw.ToLowerInvariant();
+            string hint = "";
+            if (lower.Contains("no such file") || lower.Contains("cannot find") || lower.Contains("not found"))
+                hint = "يبدو أن ملفًا مطلوبًا غير موجود. تحقق من مسار الإدخال والأدوات.";
+            else if (lower.Contains("invalid data") || lower.Contains("moov atom") || lower.Contains("could not find codec"))
+                hint = "يبدو أن الفيديو تالف أو غير مدعوم بالكامل. جرّب تحويله إلى MP4 ثم أعد المحاولة.";
+            else if (lower.Contains("permission") || lower.Contains("access is denied") || lower.Contains("denied"))
+                hint = "يبدو أن ويندوز منع الوصول إلى ملف أو مجلد. اختر مجلد إخراج آخر وأغلق أي مشغل فيديو يستخدم الملف.";
+            else if (lower.Contains("no space") || lower.Contains("not enough space") || lower.Contains("disk full"))
+                hint = "المساحة غير كافية. حرر مساحة في مجلد الإخراج والمجلد المؤقت.";
+            else if (lower.Contains("vulkan") || lower.Contains("gpu") || lower.Contains("device"))
+                hint = "قد تكون المشكلة من تعريف كرت الشاشة أو Vulkan. حدّث تعريف GPU ثم جرّب مرة أخرى.";
+
+            return string.IsNullOrWhiteSpace(hint)
+                ? raw.Trim()
+                : hint + "\n\nTechnical details:\n" + raw.Trim();
+        }
+
         private static bool IsImportantLogMessage(string msg)
         {
             if (string.IsNullOrWhiteSpace(msg))
@@ -1379,6 +1601,7 @@ namespace ForgeFlow
             AppendLog("ERROR: " + msg);
             StopRunnerAnimation("😵");
             SetProgressMood("😵", "Needs fix", Brushes.OrangeRed);
+            PlayCompletionSound(success: false);
             MessageBox.Show(msg, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
 

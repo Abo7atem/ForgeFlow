@@ -57,6 +57,10 @@ namespace ForgeFlow
             if (!File.Exists(ffprobePath) || !File.Exists(videoPath))
                 return null;
 
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            CancellationToken token = linkedCts.Token;
+
             string args = "-v error -show_format -show_streams -of json " + QuotePath(videoPath);
             var psi = new ProcessStartInfo
             {
@@ -70,9 +74,18 @@ namespace ForgeFlow
 
             using var process = new Process { StartInfo = psi };
             process.Start();
-            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(token);
+            Task<string> stderrTask = process.StandardError.ReadToEndAsync(token);
+            try
+            {
+                await process.WaitForExitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return null;
+            }
+
             string json = await stdoutTask.ConfigureAwait(false);
             await stderrTask.ConfigureAwait(false);
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(json))

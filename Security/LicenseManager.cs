@@ -184,7 +184,7 @@ namespace ForgeFlow.Security
 
                 builder.Append(c switch
                 {
-                    '٫' or '·' or '•' or '。' => '.',
+                    '·' or '•' => '.',
                     _ => c
                 });
             }

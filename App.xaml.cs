@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -80,7 +81,12 @@ namespace ForgeFlow
                 string path = Path.Combine(dir, "crash.log");
                 File.AppendAllText(
                     path,
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}]\n{exception}\n\n");
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}]\n" +
+                    $"Version: {Assembly.GetExecutingAssembly().GetName().Version}\n" +
+                    $"OS: {Environment.OSVersion}\n" +
+                    $"Machine: {Environment.MachineName}\n" +
+                    $"User: {Environment.UserName}\n\n" +
+                    $"{exception}\n\n");
             }
             catch
             {
