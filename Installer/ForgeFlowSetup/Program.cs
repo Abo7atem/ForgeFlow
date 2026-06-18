@@ -217,6 +217,50 @@ internal static class Program
                 {
                 }
             }
+
+            ExistingInstall? scannedInstall = FindExistingInstallFromRegistryRoot(root);
+            if (scannedInstall != null)
+                return scannedInstall;
+        }
+
+        return null;
+    }
+
+    private static ExistingInstall? FindExistingInstallFromRegistryRoot(RegistryKey root)
+    {
+        try
+        {
+            using RegistryKey? uninstallRoot = root.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall");
+            if (uninstallRoot == null)
+                return null;
+
+            foreach (string subKeyName in uninstallRoot.GetSubKeyNames())
+            {
+                try
+                {
+                    using RegistryKey? key = uninstallRoot.OpenSubKey(subKeyName);
+                    string displayName = key?.GetValue("DisplayName")?.ToString() ?? "";
+                    if (!displayName.Contains("ForgeFlow", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string? installLocation = key?.GetValue("InstallLocation")?.ToString();
+                    if (!string.IsNullOrWhiteSpace(installLocation) &&
+                        IsForgeFlowExecutable(Path.Combine(installLocation, "ForgeFlow.exe")))
+                    {
+                        return new ExistingInstall(installLocation, null);
+                    }
+
+                    string? displayIcon = key?.GetValue("DisplayIcon")?.ToString();
+                    if (IsForgeFlowExecutable(displayIcon))
+                        return new ExistingInstall(Path.GetDirectoryName(displayIcon!)!, null);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
         }
 
         return null;
@@ -400,15 +444,17 @@ internal static class Program
         catch (Exception ex)
         {
             LogSetupError(new InvalidOperationException(
-                "Primary install directory is locked. Falling back to a clean install directory.",
+                "Primary install directory is locked. Setup will not create a second copy.",
                 ex));
 
-            progress.SetStatus("Previous install is locked. Installing clean copy...");
+            progress.SetStatus("Previous install is locked.");
             Application.DoEvents();
 
-            string fallbackInstallDir = MoveStagedPayloadToFallbackDirectory(tempInstallDir, requestedInstallDir);
-            WriteDeferredCleanupNote(fallbackInstallDir, requestedInstallDir);
-            return fallbackInstallDir;
+            TryDeleteDirectory(tempInstallDir);
+            throw new IOException(
+                "Could not replace the existing ForgeFlow Lite installation because files are still in use. " +
+                "Close ForgeFlow from Task Manager, wait a few seconds, then run setup again.",
+                ex);
         }
     }
 

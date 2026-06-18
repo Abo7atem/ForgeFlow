@@ -10,7 +10,7 @@ namespace ForgeFlow
 {
     public sealed class UpdateChecker : IDisposable
     {
-        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlow/releases/latest";
+        private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlowAPP/releases/latest";
         private const string StoreDownloadUrl = "https://4tiko.net";
         private readonly HttpClient _httpClient;
 
