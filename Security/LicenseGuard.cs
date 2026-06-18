@@ -29,10 +29,10 @@ namespace ForgeFlow.Security
 
             var (allowed, remaining, tampered) = TrialManager.CheckTrial();
             if (tampered)
-                return GuardDecision.Deny("Trial data or system time was tampered with. Activation is required.");
+                return GuardDecision.Deny("Free plan data or system time was tampered with. Upgrade to Pro is required.");
 
             if (!allowed)
-                return GuardDecision.Deny($"The free trial is finished. ForgeFlow Lite allows {TrialManager.MaxTrialVideos} videos before activation.");
+                return GuardDecision.Deny($"The free plan limit is finished. ForgeFlow allows {TrialManager.MaxTrialVideos} successful exports before Pro is required.");
 
             return GuardDecision.AllowTrial(remaining, TrialManager.GetTrialCount());
         }
@@ -44,11 +44,6 @@ namespace ForgeFlow.Security
                 return null;
 
             int trialCountForSession = decision.TrialCount;
-            if (decision.Mode == LicenseAccessMode.Trial)
-            {
-                TrialManager.IncrementTrial();
-                trialCountForSession = TrialManager.GetTrialCount();
-            }
 
             var session = new GuardSession
             {
@@ -101,6 +96,16 @@ namespace ForgeFlow.Security
                 return false;
             }
 
+            if (session.Mode == LicenseAccessMode.Trial)
+            {
+                TrialManager.IncrementTrial();
+                if (TrialManager.GetTrialCount() != session.TrialCountAtStart + 1)
+                {
+                    message = "Free plan export counter failed to advance.";
+                    return false;
+                }
+            }
+
             session.Completed = true;
             session.LastCheckpoint = "completed";
             session.Token = ComputeSessionToken(session);
@@ -144,13 +149,13 @@ namespace ForgeFlow.Security
                 var (_, _, tampered) = TrialManager.CheckTrial();
                 if (tampered)
                 {
-                    message = "Trial data or system time was tampered with during processing.";
+                    message = "Free plan data or system time was tampered with during processing.";
                     return false;
                 }
 
                 if (TrialManager.GetTrialCount() != session.TrialCountAtStart)
                 {
-                    message = "Trial counter changed during processing.";
+                    message = "Free plan export counter changed during processing.";
                     return false;
                 }
             }

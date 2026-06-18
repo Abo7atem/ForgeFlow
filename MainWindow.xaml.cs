@@ -19,10 +19,27 @@ namespace ForgeFlow
 {
     public partial class MainWindow : Window
     {
+        private sealed class UpscaleProfile
+        {
+            public string Id { get; init; } = "";
+            public string DisplayName { get; init; } = "";
+            public string Insight { get; init; } = "";
+            public string Engine { get; init; } = "none";
+            public string ModelDirectoryName { get; init; } = "";
+            public string ModelName { get; init; } = "";
+            public int Scale { get; init; } = 1;
+            public override string ToString() => DisplayName;
+        }
+
         private static readonly string[] SupportedVideoExtensions =
         {
             ".mp4", ".mov", ".mkv", ".webm", ".avi"
         };
+        private const string FreePlanHardwareMode = "cpu";
+        private const string StartupSupportUrl = "https://4tiko.net";
+        private const string BundledToolsFolderName = "Tools";
+        private const string RealEsrganExeName = "realesrgan-ncnn-vulkan.exe";
+        private const string RealCuganExeName = "realcugan-ncnn-vulkan.exe";
 
         private CancellationTokenSource? _cts;
         private string? _lastInput;
@@ -38,6 +55,8 @@ namespace ForgeFlow
         private CancellationTokenSource? _videoInfoCts;
         private readonly DispatcherTimer _runnerTimer;
         private int _runnerFrame;
+        private readonly List<UpscaleProfile> _upscaleProfiles = new();
+        private bool _uiInitialized;
         private static readonly BitmapImage RunnerImage = LoadEmojiImage("runner.png");
         private static readonly BitmapImage RunnerManImage = LoadEmojiImage("runner_man.png");
         private static readonly BitmapImage PartyImage = LoadEmojiImage("party.png");
@@ -67,12 +86,23 @@ namespace ForgeFlow
             StartButton.IsEnabled = false;
             ActivationButton.IsEnabled = false;
             CompletionSoundCheckBox.IsChecked = _settings.PlayCompletionSound;
+            SummaryCheckBox.IsChecked = _settings.ShowProcessingSummary;
+            SelectComboItemByTag(HardwareComboBox, string.IsNullOrWhiteSpace(_settings.HardwareAccelerationMode) ? "cpu" : _settings.HardwareAccelerationMode);
+            SelectComboItemByTag(MotionComboBox, _settings.EnableRife ? "on" : "off");
+            SelectComboItemByTag(ProcessingOrderComboBox, string.IsNullOrWhiteSpace(_settings.ProcessingOrder) ? "rife-then-upscale" : _settings.ProcessingOrder);
+            LoadUpscaleProfiles();
             ToolsStatusTextBlock.Text = "Running startup checks...";
             ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
             VideoInfoTextBlock.Text = "Verifying tools, integrity manifest, version, and rife-v4.26 model";
             VideoInfoTextBlock.Foreground = Brushes.Gray;
             EstimateTextBlock.Text = "Start will unlock automatically when startup and update checks pass.";
             EstimateTextBlock.Foreground = Brushes.Gray;
+            RefreshPresetInsight();
+            RefreshUpscaleInsight();
+            RefreshOutputPreview();
+            _uiInitialized = true;
+            ApplyPlanRestrictionsToUi(showMessage: false);
+            RefreshStartHint();
 
             string? tamperMessage = _licenseManager.CheckForDateTamper();
             if (!string.IsNullOrWhiteSpace(tamperMessage))
@@ -82,8 +112,12 @@ namespace ForgeFlow
             {
                 VersionTextBlock.Text = "v" + GetAppVersion();
                 UpdateLicenseStatus();
+                ShowWelcomeWindowIfNeeded();
+                UpdateLicenseStatus();
+                _ = OpenStartupSupportPageIfNeededAsync();
                 await RunStartupChecksAsync();
                 CleanupOldUpdateInstallers();
+                CleanupOldSupportReports();
                 CleanupStaleProcessingSessions();
                 await CheckForMandatoryUpdatesAsync(showNoUpdateMessage: false);
                 RefreshActionButtons();
@@ -162,11 +196,25 @@ namespace ForgeFlow
             if (!ConfirmOverwriteOutputs(output))
                 return;
 
-            if (!ConfirmProcessingSummary(input, output))
+            if (!WarnIfHeavyUpscaleThenRife())
+                return;
+
+            if (SummaryCheckBox.IsChecked == true && !ConfirmProcessingSummary(input, output))
                 return;
 
             if (!await EnsureUpdateGateAsync())
                 return;
+
+            if (IsFreePlan() && GetRemainingFreeExports() <= 0)
+            {
+                MessageBox.Show(
+                    this,
+                    "Free plan includes 2 successful exports only. Upgrade to Pro to continue.\n\nالخطة المجانية تسمح بتصديرين ناجحين فقط. قم بالترقية إلى Pro للمتابعة.",
+                    "Free Plan Limit | حد الخطة المجانية",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
 
             if (!EnsureAccessBeforeProcessing())
                 return;
@@ -242,17 +290,24 @@ namespace ForgeFlow
                     VerboseLogging = false
                 };
                 ApplySelectedPreset(interpolator);
+                ApplySelectedHardwareMode(interpolator);
+                ApplySelectedMotion(interpolator);
+                ApplySelectedUpscaleProfile(interpolator);
 
                 AppendLog("Started");
                 AppendLog("Input: " + Path.GetFileName(input));
                 AppendLog("Output folder: " + (outDir ?? AppContext.BaseDirectory));
+                AppendLog("Hardware: " + GetEffectiveHardwareModeDisplayName());
+                AppendLog("Motion: " + GetSelectedMotionDisplayName());
+                AppendLog("Pipeline: " + GetSelectedProcessingOrderDisplayName());
+                AppendLog("Quality boost: " + GetSelectedUpscaleProfile().DisplayName);
                 if (!AdvanceLicenseCheckpoint(guardSession, "processing-started")) return;
 
                 var res = await interpolator.InterpolateVideoAsync(
                     inputVideoPath: input,
                     outputVideoPath: output,
                     showConsoleWindows: false,
-                    useNvdecForDecoding: false,
+                    useNvdecForDecoding: string.Equals(GetSelectedHardwareMode(), "nvidia", StringComparison.OrdinalIgnoreCase),
                     progressCallback: msg => Dispatcher.Invoke(() => AppendLog(msg)),
                     cancellationToken: _cts.Token);
 
@@ -360,11 +415,25 @@ namespace ForgeFlow
 
         private void AboutButton_Click(object sender, RoutedEventArgs e)
         {
-            var about = new AboutWindow(LicenseStatusTextBlock.Text)
+            var about = new AboutWindow(GetCurrentPlanDisplayText())
             {
                 Owner = this
             };
             about.ShowDialog();
+        }
+
+        private void SupportButton_Click(object sender, RoutedEventArgs e)
+        {
+            var support = new SupportWindow(GetCurrentPlanDisplayText())
+            {
+                Owner = this
+            };
+            support.ShowDialog();
+        }
+
+        private void InlineUpgradeButton_Click(object sender, RoutedEventArgs e)
+        {
+            OpenActivationWindow();
         }
 
         private void ClearLogButton_Click(object sender, RoutedEventArgs e)
@@ -401,6 +470,81 @@ namespace ForgeFlow
             _settings.Save();
         }
 
+        private void SummaryCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_settings == null)
+                return;
+
+            _settings.ShowProcessingSummary = SummaryCheckBox.IsChecked == true;
+            _settings.Save();
+        }
+
+        private void UpscaleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            if (!EnsureUpscaleSelectionAllowed())
+                return;
+
+            RefreshUpscaleInsight();
+            RefreshOutputPreview();
+            RefreshProcessingOrderState();
+            if (_settings == null)
+                return;
+
+            _settings.SelectedUpscaleProfileId = GetSelectedUpscaleProfile().Id;
+            _settings.Save();
+        }
+
+        private void HardwareComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            if (!EnsureHardwareSelectionAllowed())
+                return;
+
+            RefreshOutputPreview();
+            if (_settings == null)
+                return;
+
+            _settings.HardwareAccelerationMode = GetSelectedHardwareMode();
+            _settings.Save();
+        }
+
+        private void MotionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            ApplyPlanRestrictionsToUi(showMessage: false);
+            RefreshUpscaleInsight();
+            RefreshOutputPreview();
+            RefreshProcessingOrderState();
+            if (_settings == null)
+                return;
+
+            _settings.EnableRife = IsRifeEnabled();
+            _settings.Save();
+        }
+
+        private void ProcessingOrderComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            if (!EnsureProcessingOrderAllowed())
+                return;
+
+            RefreshUpscaleInsight();
+            if (_settings == null)
+                return;
+
+            _settings.ProcessingOrder = GetSelectedProcessingOrder();
+            _settings.Save();
+        }
+
         private void OpenOutputFolderButton_Click(object sender, RoutedEventArgs e)
         {
             string output = OutputTextBox.Text.Trim();
@@ -414,7 +558,9 @@ namespace ForgeFlow
             StartButton.IsEnabled = !busy && CanStartProcessing();
             CancelButton.IsEnabled = busy;
             ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
+            SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+            RefreshStartHint();
         }
 
         private bool CanStartProcessing()
@@ -422,7 +568,8 @@ namespace ForgeFlow
             return (_toolStatus?.Ready ?? false) &&
                    _updateGatePassed &&
                    _cts == null &&
-                   HasRunnableInputOutput();
+                   HasRunnableInputOutput() &&
+                   (IsProActivated() || GetRemainingFreeExports() > 0);
         }
 
         private bool HasRunnableInputOutput()
@@ -442,7 +589,60 @@ namespace ForgeFlow
             StartButton.IsEnabled = !busy && CanStartProcessing();
             CancelButton.IsEnabled = busy;
             ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
+            SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+            RefreshStartHint();
+        }
+
+        private void RefreshStartHint()
+        {
+            string hint = GetStartReadinessHint();
+            StartHintTextBlock.Text = hint;
+            StartHintTextBlock.Foreground = CanStartProcessing() ? Brushes.LightGreen : Brushes.Gray;
+            StartButton.ToolTip = hint;
+        }
+
+        private string GetStartReadinessHint()
+        {
+            if (_cts != null)
+                return "Processing is already running.";
+
+            if (_updateCheckInProgress)
+                return "Start is waiting for the update check to finish.";
+
+            if (!(_toolStatus?.Ready ?? false))
+                return "Start is waiting for verified processing tools. Use Test Tools for details.";
+
+            if (!_updateGatePassed)
+                return "Start is waiting for the mandatory update check.";
+
+            string input = InputTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+                return "Choose an input video to unlock Start.";
+
+            if (!File.Exists(input))
+                return "Input video was not found. Choose a valid file.";
+
+            if (!SupportedVideoExtensions.Contains(Path.GetExtension(input), StringComparer.OrdinalIgnoreCase))
+                return "Input format is not supported. Choose a common video file.";
+
+            string output = OutputTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(output))
+                return "Choose an MP4 output path to unlock Start.";
+
+            if (string.IsNullOrWhiteSpace(Path.GetDirectoryName(output)))
+                return "Output folder is not valid. Choose an output path.";
+
+            if (!string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
+                return "Output must be an MP4 file.";
+
+            if (PathsEqual(input, output))
+                return "Output cannot be the same file as input.";
+
+            if (IsFreePlan() && GetRemainingFreeExports() <= 0)
+                return "Free plan reached its 2 export limit. Open Support to upgrade to Pro.";
+
+            return "Ready to process.";
         }
 
         private void SetProgressVisual(double percent, string face, string text, Brush brush)
@@ -534,8 +734,475 @@ namespace ForgeFlow
 
         private void PresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (!_uiInitialized)
+                return;
+
             RefreshPresetInsight();
             RefreshOutputPreview();
+        }
+
+        private void LoadUpscaleProfiles()
+        {
+            _upscaleProfiles.Clear();
+            _upscaleProfiles.Add(new UpscaleProfile
+            {
+                Id = "off",
+                DisplayName = "Off",
+                Insight = "Quality boost is off.",
+                Engine = "none",
+                Scale = 1
+            });
+
+            string toolsDir = GetBundledToolsDirectory();
+            string realesrganModelsDir = Path.Combine(toolsDir, "models");
+            string realcuganModelsDir = Path.Combine(toolsDir, "models-se");
+
+            if (Directory.Exists(realesrganModelsDir))
+            {
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x2", "Anime Video x2", "Real-ESRGAN anime video model with 2x upscale.", "realesrgan", 2);
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x3", "Anime Video x3", "Real-ESRGAN anime video model with 3x upscale.", "realesrgan", 3);
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x4", "Anime Video x4", "Real-ESRGAN anime video model with 4x upscale.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrgan-x4plus-anime", "Real-ESRGAN Anime x4", "Sharper anime-oriented 4x upscale using Real-ESRGAN.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus", "Real-ESRNet x4", "Natural-looking 4x upscale with lighter sharpening.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus-x4", "Real-ESRNet x4 Plus", "Alternative 4x Real-ESRNet profile for softer restoration.", "realesrgan", 4);
+            }
+
+            if (Directory.Exists(realcuganModelsDir))
+            {
+                AddProfileIfPresent(realcuganModelsDir, "up2x-no-denoise", "Real-CUGAN x2 Clean", "2x upscale with minimal denoise for anime lines and UI captures.", "realcugan", 2, "models-se");
+                AddProfileIfPresent(realcuganModelsDir, "up3x-no-denoise", "Real-CUGAN x3 Clean", "3x upscale with minimal denoise for anime-style material.", "realcugan", 3, "models-se");
+                AddProfileIfPresent(realcuganModelsDir, "up4x-no-denoise", "Real-CUGAN x4 Clean", "4x upscale with minimal denoise for maximum retained texture.", "realcugan", 4, "models-se");
+            }
+
+            UpscaleComboBox.Items.Clear();
+            foreach (UpscaleProfile profile in _upscaleProfiles)
+            {
+                UpscaleComboBox.Items.Add(new ComboBoxItem
+                {
+                    Content = profile.DisplayName,
+                    Tag = profile.Id
+                });
+            }
+
+            string wantedId = string.IsNullOrWhiteSpace(_settings.SelectedUpscaleProfileId)
+                ? "off"
+                : _settings.SelectedUpscaleProfileId;
+
+            ComboBoxItem? selected = UpscaleComboBox.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag as string, wantedId, StringComparison.OrdinalIgnoreCase));
+
+            UpscaleComboBox.SelectedItem = selected ?? UpscaleComboBox.Items.OfType<ComboBoxItem>().FirstOrDefault();
+            RefreshUpscaleInsight();
+            RefreshProcessingOrderState();
+        }
+
+        private void AddProfileIfPresent(string modelsRoot, string modelName, string displayName, string insight, string engine, int scale, string? explicitModelDirectoryName = null)
+        {
+            string paramPath = Path.Combine(modelsRoot, modelName + ".param");
+            string binPath = Path.Combine(modelsRoot, modelName + ".bin");
+            if (!File.Exists(paramPath) || !File.Exists(binPath))
+                return;
+
+            string modelDirectoryName = explicitModelDirectoryName
+                ?? new DirectoryInfo(modelsRoot).Name;
+
+            _upscaleProfiles.Add(new UpscaleProfile
+            {
+                Id = engine + ":" + modelDirectoryName + ":" + modelName,
+                DisplayName = displayName,
+                Insight = insight,
+                Engine = engine,
+                ModelDirectoryName = modelDirectoryName,
+                ModelName = modelName,
+                Scale = scale
+            });
+        }
+
+        private void ApplySelectedUpscaleProfile(VideoInterpolator interpolator)
+        {
+            UpscaleProfile profile = GetSelectedUpscaleProfile();
+            interpolator.EnableUpscale = profile.Engine != "none";
+            interpolator.UpscaleScale = profile.Scale;
+            interpolator.UpscaleModelName = profile.ModelName;
+            interpolator.UpscaleDisplayName = profile.DisplayName;
+            interpolator.UpscaleModelDirectory = Path.Combine(GetBundledToolsDirectory(), profile.ModelDirectoryName);
+            interpolator.UpscaleExecutablePath = profile.Engine switch
+            {
+                "realesrgan" => Path.Combine(GetBundledToolsDirectory(), RealEsrganExeName),
+                "realcugan" => Path.Combine(GetBundledToolsDirectory(), RealCuganExeName),
+                _ => ""
+            };
+            interpolator.UpscaleEngine = profile.Engine;
+        }
+
+        private void ApplySelectedMotion(VideoInterpolator interpolator)
+        {
+            interpolator.EnableRifeInterpolation = IsRifeEnabled();
+            interpolator.ProcessUpscaleBeforeRife = string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ApplySelectedHardwareMode(VideoInterpolator interpolator)
+        {
+            string mode = GetEffectiveHardwareMode();
+            interpolator.HardwareAccelerationMode = mode;
+        }
+
+        private bool IsProActivated()
+        {
+            GuardDecision decision = _licenseGuard.EvaluateAccess();
+            return decision.Allowed && decision.Mode == LicenseAccessMode.Licensed;
+        }
+
+        private bool IsFreePlan()
+        {
+            return !IsProActivated();
+        }
+
+        private int GetRemainingFreeExports()
+        {
+            var (allowed, remaining, _) = TrialManager.CheckTrial();
+            return allowed ? remaining : 0;
+        }
+
+        private string GetCurrentPlanDisplayText()
+        {
+            if (IsProActivated())
+                return "Pro activated | unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
+
+            int remaining = GetRemainingFreeExports();
+            return $"Free plan | {remaining} of {TrialManager.MaxTrialVideos} exports remaining | CPU only";
+        }
+
+        private void ApplyPlanRestrictionsToUi(bool showMessage)
+        {
+            RefreshPlanOptionLabels();
+
+            if (IsProActivated())
+            {
+                RefreshProcessingOrderState();
+                return;
+            }
+
+            bool changed = false;
+
+            if (!string.Equals(GetSelectedHardwareMode(), FreePlanHardwareMode, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(HardwareComboBox, FreePlanHardwareMode);
+                changed = true;
+            }
+
+            if (GetSelectedUpscaleProfile().Engine != "none")
+            {
+                SelectComboItemByTag(UpscaleComboBox, "off");
+                changed = true;
+            }
+
+            if (string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+                changed = true;
+            }
+
+            if (showMessage && changed)
+            {
+                MessageBox.Show(
+                    this,
+                    "Free plan allows 2 successful exports and uses CPU only. Quality Boost, Upscale then RIFE, and hardware acceleration are available in Pro only.\n\nالخطة المجانية تسمح بتصديرين ناجحين فقط وتعمل على CPU فقط. ميزة Quality Boost وخيار Upscale then RIFE والتسريع العتادي متاحة فقط في Pro.",
+                    "Pro Features | ميزات Pro",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+        }
+
+        private bool EnsureHardwareSelectionAllowed()
+        {
+            if (IsProActivated())
+                return true;
+
+            if (string.Equals(GetSelectedHardwareMode(), FreePlanHardwareMode, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            SelectComboItemByTag(HardwareComboBox, FreePlanHardwareMode);
+            MessageBox.Show(this, "Hardware acceleration is available in Pro only. Free uses CPU.\n\nالتسريع العتادي متاح فقط في Pro. الخطة المجانية تستخدم CPU.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        private bool EnsureUpscaleSelectionAllowed()
+        {
+            if (IsProActivated())
+                return true;
+
+            if (GetSelectedUpscaleProfile().Engine == "none")
+                return true;
+
+            SelectComboItemByTag(UpscaleComboBox, "off");
+            MessageBox.Show(this, "Quality Boost is available in Pro only.\n\nميزة Quality Boost متاحة فقط في Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        private bool EnsureProcessingOrderAllowed()
+        {
+            if (IsProActivated())
+                return true;
+
+            if (!string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+            MessageBox.Show(this, "Upscale then RIFE is available in Pro only.\n\nخيار Upscale then RIFE متاح فقط في Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        private void RefreshPlanOptionLabels()
+        {
+            bool freePlan = IsFreePlan();
+
+            HardwareTitleTextBlock.Text = freePlan ? "Hardware [CPU in Free]" : "Hardware";
+            MotionTitleTextBlock.Text = "Motion";
+            QualityBoostTitleTextBlock.Text = freePlan ? "Quality Boost [Pro]" : "Quality Boost";
+            PipelineOrderTitleTextBlock.Text = freePlan ? "Pipeline Order [Pro advanced]" : "Pipeline Order";
+            HardwareUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
+            QualityUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
+            PipelineUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
+            HardwareUpgradeButton.Content = "Upgrade | ترقية";
+            QualityUpgradeButton.Content = "Upgrade | ترقية";
+            PipelineUpgradeButton.Content = "Upgrade | ترقية";
+            HardwareHintTextBlock.Text = freePlan ? "Free uses CPU only for reliable basic exports.\nالخطة المجانية تعمل على CPU فقط لتصديرات أساسية مستقرة." : "Choose CPU, NVIDIA, or AMD based on your hardware.\nاختر CPU أو NVIDIA أو AMD حسب جهازك.";
+            QualityBoostHintTextBlock.Text = freePlan ? "Quality Boost is locked in Free. Upgrade to Pro to unlock upscale models.\nميزة Quality Boost مقفلة في الخطة المجانية. قم بالترقية إلى Pro لفتح نماذج التكبير." : "Use bundled upscale models to improve output detail.\nاستخدم نماذج التكبير المضمنة لتحسين تفاصيل الإخراج.";
+            PipelineHintTextBlock.Text = freePlan ? "Advanced pipeline order is locked in Free.\nترتيب المعالجة المتقدم مقفل في الخطة المجانية." : "Choose the order that fits your quality and VRAM budget.\nاختر ترتيب المعالجة المناسب للجودة وذاكرة VRAM.";
+
+            SetComboItemContent(HardwareComboBox, "cpu", "CPU", "Free plan uses CPU for reliable exports.");
+            SetComboItemContent(HardwareComboBox, "nvidia", freePlan ? "NVIDIA NVENC/NVDEC [Pro]" : "NVIDIA NVENC/NVDEC", freePlan ? "Upgrade to Pro to unlock NVIDIA acceleration." : "Use NVIDIA hardware decoding and encoding when supported.");
+            SetComboItemContent(HardwareComboBox, "amd", freePlan ? "AMD AMF [Pro]" : "AMD AMF", freePlan ? "Upgrade to Pro to unlock AMD acceleration." : "Use AMD hardware decoding and encoding when supported.");
+            SetComboItemContent(ProcessingOrderComboBox, "rife-then-upscale", "RIFE then Upscale", freePlan ? "Free plan keeps this safe default order." : "Interpolate first, then upscale the final frames.");
+            SetComboItemContent(ProcessingOrderComboBox, "upscale-then-rife", freePlan ? "Upscale then RIFE [Pro]" : "Upscale then RIFE", freePlan ? "Upgrade to Pro to unlock this heavier pipeline order." : "Upscale first, then let RIFE interpolate the larger frames.");
+
+            foreach (ComboBoxItem item in UpscaleComboBox.Items.OfType<ComboBoxItem>())
+            {
+                string id = item.Tag as string ?? string.Empty;
+                UpscaleProfile profile = _upscaleProfiles.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
+                    ?? _upscaleProfiles.First();
+                bool proOnly = profile.Engine != "none";
+                item.Content = proOnly && freePlan ? profile.DisplayName + " [Pro]" : profile.DisplayName;
+                item.ToolTip = proOnly && freePlan
+                    ? "Upgrade to Pro to unlock Quality Boost."
+                    : profile.Insight;
+            }
+        }
+
+        private static void SetComboItemContent(ComboBox comboBox, string tag, string content, string toolTip)
+        {
+            ComboBoxItem? item = comboBox.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(entry => string.Equals(entry.Tag as string, tag, StringComparison.OrdinalIgnoreCase));
+            if (item == null)
+                return;
+
+            item.Content = content;
+            item.ToolTip = toolTip;
+        }
+
+        private void ShowWelcomeWindowIfNeeded()
+        {
+            if (_settings.HasSeenWelcomeScreen)
+                return;
+
+            _settings.HasSeenWelcomeScreen = true;
+            _settings.Save();
+
+            var welcome = new WelcomeWindow
+            {
+                Owner = this
+            };
+
+            welcome.ShowDialog();
+            if (welcome.OpenUpgrade)
+                OpenActivationWindow();
+        }
+
+        private async Task OpenStartupSupportPageIfNeededAsync()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2.5));
+
+            if (!IsLoaded || !IsVisible || !IsFreePlan())
+                return;
+
+            OpenUpdateUrl(StartupSupportUrl);
+        }
+
+        private UpscaleProfile GetSelectedUpscaleProfile()
+        {
+            string? id = (UpscaleComboBox.SelectedItem as ComboBoxItem)?.Tag as string;
+            return _upscaleProfiles.FirstOrDefault(profile => string.Equals(profile.Id, id, StringComparison.OrdinalIgnoreCase))
+                ?? _upscaleProfiles.First();
+        }
+
+        private void RefreshUpscaleInsight()
+        {
+            bool rife = IsRifeEnabled();
+            UpscaleProfile profile = _upscaleProfiles.Count == 0
+                ? new UpscaleProfile { DisplayName = "Off", Insight = "Quality boost is off." }
+                : GetSelectedUpscaleProfile();
+
+            bool upscale = profile.Engine != "none";
+            string order = GetSelectedProcessingOrder();
+            UpscaleInsightTextBlock.Text = (rife, upscale, order) switch
+            {
+                (true, true, "upscale-then-rife") => $"{profile.DisplayName} will run first, then RIFE will add smoothness.",
+                (true, true, _) => $"RIFE will run first, then {profile.DisplayName} will boost resolution.",
+                (true, false, _) => "RIFE is on. Motion will be improved without quality boost.",
+                (false, true, _) => $"Only {profile.DisplayName} will run. Resolution changes without motion interpolation.",
+                _ => "RIFE and quality boost are both off. Export will keep the source motion and resolution."
+            };
+            RefreshProcessingOrderState();
+        }
+
+        private void RefreshProcessingOrderState()
+        {
+            ProcessingOrderComboBox.IsEnabled = true;
+        }
+
+        private bool IsRifeEnabled()
+        {
+            return string.Equals((MotionComboBox.SelectedItem as ComboBoxItem)?.Tag as string, "on", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetSelectedMotionDisplayName()
+        {
+            return IsRifeEnabled() ? "RIFE On" : "RIFE Off";
+        }
+
+        private string GetSelectedHardwareMode()
+        {
+            return (HardwareComboBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "cpu";
+        }
+
+        private string GetSelectedHardwareModeDisplayName()
+        {
+            return GetSelectedHardwareMode() switch
+            {
+                "nvidia" => "NVIDIA NVENC/NVDEC",
+                "amd" => "AMD AMF",
+                _ => "CPU"
+            };
+        }
+
+        private string GetSelectedProcessingOrder()
+        {
+            return (ProcessingOrderComboBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "rife-then-upscale";
+        }
+
+        private string GetSelectedProcessingOrderDisplayName()
+        {
+            return string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase)
+                ? "Upscale then RIFE"
+                : "RIFE then Upscale";
+        }
+
+        private int GetSelectedUpscaleScale()
+        {
+            UpscaleProfile profile = GetSelectedUpscaleProfile();
+            return Math.Max(1, profile.Scale);
+        }
+
+        private (int Width, int Height) GetEstimatedOutputDimensions()
+        {
+            if (_selectedVideoInfo == null)
+                return (0, 0);
+
+            int scale = GetSelectedUpscaleProfile().Engine == "none" ? 1 : GetSelectedUpscaleScale();
+            return (_selectedVideoInfo.Width * scale, _selectedVideoInfo.Height * scale);
+        }
+
+        private string GetEffectiveHardwareMode()
+        {
+            if (IsFreePlan())
+                return FreePlanHardwareMode;
+
+            string selected = GetSelectedHardwareMode();
+            if (!string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase))
+                return selected;
+
+            (int width, _) = GetEstimatedOutputDimensions();
+            if (width > 4096)
+                return "cpu";
+
+            return selected;
+        }
+
+        private string GetEffectiveHardwareModeDisplayName()
+        {
+            if (IsFreePlan())
+                return "CPU (Free plan)";
+
+            string selected = GetSelectedHardwareMode();
+            string effective = GetEffectiveHardwareMode();
+            if (string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase) && !string.Equals(effective, selected, StringComparison.OrdinalIgnoreCase))
+                return "CPU (NVENC skipped: width > 4096)";
+
+            return effective switch
+            {
+                "nvidia" => "NVIDIA NVENC/NVDEC",
+                "amd" => "AMD AMF",
+                _ => "CPU"
+            };
+        }
+
+        private bool WarnIfHeavyUpscaleThenRife()
+        {
+            if (_selectedVideoInfo == null)
+                return true;
+
+            bool heavyCase = IsRifeEnabled()
+                             && string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase)
+                             && GetSelectedUpscaleProfile().Engine != "none"
+                             && GetSelectedUpscaleScale() >= 4;
+            if (!heavyCase)
+                return true;
+
+            (int width, int height) = GetEstimatedOutputDimensions();
+            string message =
+                "تحذير قبل البدء:\n\n" +
+                "أنت اخترت Upscale then RIFE مع تكبير x4، وهذا قد يضغط VRAM بقوة حتى على الكروت القوية.\n\n" +
+                $"الدقة المتوقعة قبل RIFE: {width}x{height}\n" +
+                "قد يؤدي هذا إلى أخطاء Vulkan أو بطء شديد.\n\n" +
+                "التوصية: استخدم RIFE then Upscale أو خفّض التكبير إلى x2 أو x3.\n\n" +
+                "هل تريد المتابعة رغم ذلك؟";
+
+            return MessageBox.Show(this, message, "High VRAM Load Warning", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        }
+
+        private static void SelectComboItemByTag(ComboBox comboBox, string wantedTag)
+        {
+            ComboBoxItem? selected = comboBox.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag as string, wantedTag, StringComparison.OrdinalIgnoreCase));
+            if (selected != null)
+                comboBox.SelectedItem = selected;
+        }
+
+        private static string GetBundledToolsDirectory()
+        {
+            return Path.Combine(AppContext.BaseDirectory, BundledToolsFolderName);
+        }
+
+        private static bool IsDevelopmentBuild()
+        {
+#if DEBUG
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        private void ApplyDevelopmentUpdateBypassUi(string message)
+        {
+            _updateGatePassed = true;
+            ApplyToolStatusToUi(_toolStatus ?? RefreshToolsStatus(showDetails: false));
+            EstimateTextBlock.Text = message;
+            EstimateTextBlock.Foreground = Brushes.Goldenrod;
+            RefreshActionButtons();
         }
 
         private bool EnsureAccessBeforeProcessing()
@@ -545,14 +1212,7 @@ namespace ForgeFlow
             {
                 if (decision.Mode == LicenseAccessMode.Trial)
                 {
-                    int remainingAfterThis = Math.Max(0, decision.Remaining - 1);
-                    var confirm = MessageBox.Show(
-                        this,
-                        $"وضع التجربة: سيتم استخدام محاولة مجانية واحدة.\nالمتبقي بعد هذا الفيديو: {remainingAfterThis} من {TrialManager.MaxTrialVideos}.\n\nهل تريد المتابعة؟",
-                        "ForgeFlow Trial",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Information);
-                    return confirm == MessageBoxResult.Yes;
+                    return true;
                 }
 
                 return true;
@@ -560,8 +1220,8 @@ namespace ForgeFlow
 
             var openActivation = MessageBox.Show(
                 this,
-                decision.Message + "\n\nهل تريد فتح نافذة التفعيل الآن؟",
-                "Activation Required",
+                decision.Message + "\n\nهل تريد فتح صفحة الدعم والترقية الآن؟",
+                "Upgrade to Pro",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
 
@@ -640,6 +1300,17 @@ namespace ForgeFlow
                     return true;
                 }
 
+                if (IsDevelopmentBuild())
+                {
+                    AppendLog("WARNING: Development build bypassed mandatory update gate.");
+                    ApplyDevelopmentUpdateBypassUi("Development build: update gate bypassed for local testing.");
+                    if (showNoUpdateMessage)
+                    {
+                        MessageBox.Show(this, "تم تجاوز بوابة التحديث الإجباري لأن هذه نسخة تطوير للتجربة المحلية.", "Development Build", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                    return true;
+                }
+
                 if (update.IsBlocked)
                 {
                     _updateGatePassed = false;
@@ -698,6 +1369,18 @@ namespace ForgeFlow
             catch (Exception ex)
             {
                 Debug.WriteLine("Update check failed: " + ex.Message);
+
+                if (IsDevelopmentBuild())
+                {
+                    AppendLog("WARNING: Update check failed in development build: " + ex.Message);
+                    ApplyDevelopmentUpdateBypassUi("Development build: update check failed, gate bypassed for local testing.");
+                    if (showNoUpdateMessage)
+                    {
+                        MessageBox.Show(this, "تعذر فحص التحديثات، لكن تم السماح بالتشغيل لأن هذه نسخة تطوير محلية.\n\n" + ex.Message, "Development Build", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                    return true;
+                }
+
                 _updateGatePassed = false;
                 ToolsStatusTextBlock.Text = "Update check failed";
                 ToolsStatusTextBlock.Foreground = Brushes.Orange;
@@ -770,25 +1453,113 @@ namespace ForgeFlow
             }
         }
 
+        private string GetProRemainingDisplay()
+        {
+            LicenseInfo license = _licenseManager.CurrentLicense;
+            if (license.Type == LicenseType.Lifetime)
+                return "Lifetime | مدى الحياة";
+
+            if (!license.ExpiresOn.HasValue)
+                return "Active | نشط";
+
+            TimeSpan remaining = license.ExpiresOn.Value - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                return "Expired | منتهي";
+
+            if (remaining.TotalDays >= 60)
+                return $"{Math.Ceiling(remaining.TotalDays / 30)} months left | متبقي {Math.Ceiling(remaining.TotalDays / 30)} أشهر";
+
+            if (remaining.TotalDays >= 2)
+                return $"{Math.Ceiling(remaining.TotalDays)} days left | متبقي {Math.Ceiling(remaining.TotalDays)} أيام";
+
+            if (remaining.TotalHours >= 2)
+                return $"{Math.Ceiling(remaining.TotalHours)} hours left | متبقي {Math.Ceiling(remaining.TotalHours)} ساعات";
+
+            return "Less than 2 hours left | متبقي أقل من ساعتين";
+        }
+
+        private string GetProExpiryDateDisplay()
+        {
+            LicenseInfo license = _licenseManager.CurrentLicense;
+            if (license.Type == LicenseType.Lifetime)
+                return "Expires: Never | تاريخ الانتهاء: لا ينتهي";
+
+            if (!license.ExpiresOn.HasValue)
+                return "Expires: Unknown | تاريخ الانتهاء: غير معروف";
+
+            return $"Expires: {license.ExpiresOn.Value:yyyy-MM-dd} | تاريخ الانتهاء: {license.ExpiresOn.Value:yyyy-MM-dd}";
+        }
+
+        private Brush GetProStatusBrush()
+        {
+            LicenseInfo license = _licenseManager.CurrentLicense;
+            if (license.Type == LicenseType.Lifetime || !license.ExpiresOn.HasValue)
+                return Brushes.LightGreen;
+
+            TimeSpan remaining = license.ExpiresOn.Value - DateTime.UtcNow;
+            if (remaining.TotalDays < 3)
+                return Brushes.OrangeRed;
+
+            if (remaining.TotalDays < 7)
+                return Brushes.Gold;
+
+            return Brushes.LightGreen;
+        }
+
         private void UpdateLicenseStatus()
         {
             GuardDecision decision = _licenseGuard.EvaluateAccess();
             if (decision.Allowed && decision.Mode == LicenseAccessMode.Licensed)
             {
-                LicenseStatusTextBlock.Text = "Activated";
-                LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.LightGreen;
+                Brush proBrush = GetProStatusBrush();
+                bool warning = proBrush != Brushes.LightGreen;
+                PlanBadgeTextBlock.Text = warning ? "PRO ENDING SOON" : "PRO ACTIVE";
+                PlanBadgeBorder.Background = warning
+                    ? new SolidColorBrush(Color.FromRgb(74, 41, 16))
+                    : new SolidColorBrush(Color.FromRgb(26, 66, 44));
+                PlanBadgeBorder.BorderBrush = warning
+                    ? new SolidColorBrush(Color.FromRgb(255, 159, 10))
+                    : new SolidColorBrush(Color.FromRgb(48, 209, 88));
+                PlanBadgeTextBlock.Foreground = warning
+                    ? new SolidColorBrush(Color.FromRgb(255, 223, 179))
+                    : new SolidColorBrush(Color.FromRgb(202, 255, 220));
+                LicenseStatusTextBlock.Text = "Plan: Pro | " + GetProRemainingDisplay();
+                LicenseStatusTextBlock.Foreground = proBrush;
+                PlanDetailsTextBlock.Text = GetProExpiryDateDisplay() + " | Unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
+                PlanDetailsTextBlock.Foreground = warning ? proBrush : Brushes.LightGray;
+                ActivationButton.Content = "License";
+                ApplyPlanRestrictionsToUi(showMessage: false);
+                RefreshActionButtons();
                 return;
             }
 
             if (decision.Allowed && decision.Mode == LicenseAccessMode.Trial)
             {
-                LicenseStatusTextBlock.Text = $"Trial: {decision.Remaining} of {TrialManager.MaxTrialVideos} remaining";
+                PlanBadgeTextBlock.Text = "FREE PLAN";
+                PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(36, 49, 68));
+                PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(74, 144, 226));
+                PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(185, 216, 255));
+                LicenseStatusTextBlock.Text = "Plan: Free";
                 LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
+                PlanDetailsTextBlock.Text = $"{decision.Remaining} of {TrialManager.MaxTrialVideos} exports remaining | CPU only";
+                PlanDetailsTextBlock.Foreground = Brushes.LightSkyBlue;
+                ActivationButton.Content = "Upgrade";
+                ApplyPlanRestrictionsToUi(showMessage: false);
+                RefreshActionButtons();
                 return;
             }
 
-            LicenseStatusTextBlock.Text = "Activation required";
+            PlanBadgeTextBlock.Text = "FREE LIMIT";
+            PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(74, 41, 16));
+            PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 159, 10));
+            PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 223, 179));
+            LicenseStatusTextBlock.Text = "Plan: Free";
             LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+            PlanDetailsTextBlock.Text = $"0 of {TrialManager.MaxTrialVideos} exports remaining | Upgrade to Pro to continue";
+            PlanDetailsTextBlock.Foreground = Brushes.Orange;
+            ActivationButton.Content = "Upgrade";
+            ApplyPlanRestrictionsToUi(showMessage: false);
+            RefreshActionButtons();
         }
 
         private bool EnsureEnoughDiskSpace(string inputPath, string outputPath)
@@ -840,6 +1611,10 @@ namespace ForgeFlow
                 "ملخص المعالجة قبل البدء:\n\n" +
                 $"الفيديو: {inputName}\n" +
                 $"الوضع: {preset}\n" +
+                $"التسريع: {GetEffectiveHardwareModeDisplayName()}\n" +
+                $"السلاسة: {GetSelectedMotionDisplayName()}\n" +
+                $"الترتيب: {GetSelectedProcessingOrderDisplayName()}\n" +
+                $"رفع الجودة: {GetSelectedUpscaleProfile().DisplayName}\n" +
                 $"{videoInfo}\n" +
                 $"{estimate}\n\n" +
                 "سيتم إنشاء ملفين:\n" +
@@ -1042,6 +1817,7 @@ namespace ForgeFlow
         {
             try
             {
+                const int installersToKeep = 2;
                 string updateDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "ForgeFlow",
@@ -1052,10 +1828,35 @@ namespace ForgeFlow
                 var installers = Directory.GetFiles(updateDir, "ForgeFlow_Lite_Setup_*.exe")
                     .Select(path => new FileInfo(path))
                     .OrderByDescending(file => file.LastWriteTimeUtc)
-                    .Skip(1);
+                    .Skip(installersToKeep);
 
                 foreach (var installer in installers)
-                    installer.Delete();
+                    TryDeleteFile(installer.FullName);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void CleanupOldSupportReports()
+        {
+            try
+            {
+                const int reportsToKeep = 10;
+                string logsDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ForgeFlow",
+                    "Logs");
+                if (!Directory.Exists(logsDir))
+                    return;
+
+                var oldReports = Directory.GetFiles(logsDir, "support-report-*.txt")
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .Skip(reportsToKeep);
+
+                foreach (FileInfo report in oldReports)
+                    TryDeleteFile(report.FullName);
             }
             catch
             {
@@ -1066,6 +1867,7 @@ namespace ForgeFlow
         {
             try
             {
+                const int sessionsToKeep = 2;
                 string tempRoot = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "ForgeFlow",
@@ -1073,12 +1875,37 @@ namespace ForgeFlow
                 if (!Directory.Exists(tempRoot))
                     return;
 
-                foreach (string sessionDir in Directory.GetDirectories(tempRoot, "Session_*"))
-                {
-                    var info = new DirectoryInfo(sessionDir);
-                    if (info.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-1))
-                        info.Delete(true);
-                }
+                var oldSessions = Directory.GetDirectories(tempRoot, "Session_*")
+                    .Select(path => new DirectoryInfo(path))
+                    .OrderByDescending(info => info.LastWriteTimeUtc)
+                    .Skip(sessionsToKeep);
+
+                foreach (DirectoryInfo session in oldSessions)
+                    TryDeleteDirectory(session.FullName);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryDeleteDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                    Directory.Delete(path, true);
             }
             catch
             {
@@ -1305,8 +2132,13 @@ namespace ForgeFlow
             string sizeHint = _selectedVideoInfo == null
                 ? ""
                 : $" | source {VideoInfo.FormatBytes(_selectedVideoInfo.SizeBytes)}, temp about {VideoInfo.FormatBytes(VideoInfo.EstimateRequiredBytes(_selectedVideoInfo.SizeBytes))}";
+            string upscaleHint = GetSelectedUpscaleProfile().Engine == "none"
+                ? " | quality boost off"
+                : $" | boosted via {GetSelectedUpscaleProfile().DisplayName}";
+            string motionHint = IsRifeEnabled() ? " | RIFE on" : " | RIFE off";
+            string hardwareHint = " | " + GetEffectiveHardwareModeDisplayName();
             OutputPreviewTextBlock.Text =
-                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint;
+                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint + upscaleHint + motionHint + hardwareHint;
             OutputPreviewTextBlock.Foreground = Brushes.LightGray;
         }
 
@@ -1392,8 +2224,7 @@ namespace ForgeFlow
             {
                 StageLabel.Text = msg.Replace("STAGE:", "").Trim();
                 ApplyStageMood(StageLabel.Text);
-                LogsTextBox.AppendText(StageLabel.Text + Environment.NewLine);
-                LogsTextBox.ScrollToEnd();
+                AppendVisibleLog(StageLabel.Text);
                 return;
             }
 
@@ -1408,8 +2239,7 @@ namespace ForgeFlow
                             || inner.Contains("Cannot")
                             || inner.StartsWith("Warning");
                 if (isError)
-                    LogsTextBox.AppendText("  " + inner + Environment.NewLine);
-                LogsTextBox.ScrollToEnd();
+                    AppendVisibleLog("  " + inner);
                 return;
             }
 
@@ -1419,8 +2249,7 @@ namespace ForgeFlow
                 string clean = msg
                     .Replace("RIFE frames: input=", "Frames: ")
                     .Replace(", output=", " -> ");
-                LogsTextBox.AppendText(clean + Environment.NewLine);
-                LogsTextBox.ScrollToEnd();
+                AppendVisibleLog(clean);
                 return;
             }
 
@@ -1430,9 +2259,31 @@ namespace ForgeFlow
             // ── Everything else ───────────────────────────────────────
             if (IsImportantLogMessage(msg))
             {
-                LogsTextBox.AppendText(msg + Environment.NewLine);
-                LogsTextBox.ScrollToEnd();
+                AppendVisibleLog(msg);
             }
+        }
+
+        private void AppendVisibleLog(string message)
+        {
+            const int maxVisibleLogLines = 500;
+            LogsTextBox.AppendText(message + Environment.NewLine);
+            TrimVisibleLog(maxVisibleLogLines);
+            LogsTextBox.ScrollToEnd();
+        }
+
+        private void TrimVisibleLog(int maxLines)
+        {
+            if (LogsTextBox.LineCount <= maxLines)
+                return;
+
+            int lineIndexToKeep = Math.Max(0, LogsTextBox.LineCount - maxLines);
+            int charIndex = LogsTextBox.GetCharacterIndexFromLineIndex(lineIndexToKeep);
+            if (charIndex <= 0)
+                return;
+
+            LogsTextBox.Select(0, charIndex);
+            LogsTextBox.SelectedText = "";
+            LogsTextBox.CaretIndex = LogsTextBox.Text.Length;
         }
 
         private string WriteSupportReport()
@@ -1458,6 +2309,10 @@ namespace ForgeFlow
                 $"User: {Environment.UserName}\r\n" +
                 $"License: {LicenseStatusTextBlock.Text}\r\n" +
                 $"Preset: {preset}\r\n" +
+                $"Hardware: {GetEffectiveHardwareModeDisplayName()}\r\n" +
+                $"Motion: {GetSelectedMotionDisplayName()}\r\n" +
+                $"Pipeline: {GetSelectedProcessingOrderDisplayName()}\r\n" +
+                $"Quality boost: {GetSelectedUpscaleProfile().DisplayName}\r\n" +
                 $"Input: {input}\r\n" +
                 $"Output: {output}\r\n" +
                 $"Video info: {_selectedVideoInfo?.Summary ?? "not loaded"}\r\n" +
@@ -1467,6 +2322,7 @@ namespace ForgeFlow
                 LogsTextBox.Text;
 
             File.WriteAllText(path, report);
+            CleanupOldSupportReports();
             return path;
         }
 
@@ -1505,6 +2361,8 @@ namespace ForgeFlow
                 hint = "المساحة غير كافية. حرر مساحة في مجلد الإخراج والمجلد المؤقت.";
             else if (lower.Contains("vulkan") || lower.Contains("gpu") || lower.Contains("device"))
                 hint = "قد تكون المشكلة من تعريف كرت الشاشة أو Vulkan. حدّث تعريف GPU ثم جرّب مرة أخرى.";
+            else if (lower.Contains("vkallocatememory") || lower.Contains("vkqueuesubmit") || lower.Contains("vkwaitforfences"))
+                hint = "نفدت ذاكرة كرت الشاشة أثناء المعالجة. جرّب RIFE ثم Upscale بدل Upscale ثم RIFE، أو استخدم موديل أخف، أو عطّل التسريع العتادي في الترميز.";
 
             return string.IsNullOrWhiteSpace(hint)
                 ? raw.Trim()
@@ -1521,6 +2379,11 @@ namespace ForgeFlow
                 || msg.StartsWith("Input:")
                 || msg.StartsWith("Output:")
                 || msg.StartsWith("Output folder:")
+                || msg.StartsWith("Hardware:")
+                || msg.StartsWith("Motion:")
+                || msg.StartsWith("Pipeline:")
+                || msg.StartsWith("Quality boost:")
+                || msg.StartsWith("Upscale model:")
                 || msg.StartsWith("Selected:")
                 || msg.StartsWith("Video 60FPS:")
                 || msg.StartsWith("TikTok30FPS:")

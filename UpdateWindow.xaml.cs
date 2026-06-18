@@ -252,11 +252,15 @@ namespace ForgeFlow
             bool trustedHost =
                 host == "github.com" ||
                 host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase) ||
+                host == "4tiko.net" ||
+                host.EndsWith(".4tiko.net", StringComparison.OrdinalIgnoreCase) ||
                 host == "objects.githubusercontent.com" ||
                 host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
 
             bool executablePath = uri.AbsolutePath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
             bool trustedRedirectHost =
+                host == "4tiko.net" ||
+                host.EndsWith(".4tiko.net", StringComparison.OrdinalIgnoreCase) ||
                 host == "objects.githubusercontent.com" ||
                 host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
 

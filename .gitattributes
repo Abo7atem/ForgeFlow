@@ -2,3 +2,8 @@
 * text=auto
 Tools/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text
 Tools/ffprobe.exe filter=lfs diff=lfs merge=lfs -text
+Tools/realesrgan-ncnn-vulkan.exe filter=lfs diff=lfs merge=lfs -text
+Tools/realcugan-ncnn-vulkan.exe filter=lfs diff=lfs merge=lfs -text
+Tools/vcomp140.dll filter=lfs diff=lfs merge=lfs -text
+Tools/models/*.bin filter=lfs diff=lfs merge=lfs -text
+Tools/models-se/*.bin filter=lfs diff=lfs merge=lfs -text

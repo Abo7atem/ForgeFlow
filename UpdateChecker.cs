@@ -11,6 +11,7 @@ namespace ForgeFlow
     public sealed class UpdateChecker : IDisposable
     {
         private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlow/releases/latest";
+        private const string StoreDownloadUrl = "https://4tiko.net";
         private readonly HttpClient _httpClient;
 
         public UpdateChecker()
@@ -53,8 +54,8 @@ namespace ForgeFlow
                     ReleaseName = release.Name ?? release.TagName ?? "Latest release",
                     ReleaseNotes = release.Body ?? "",
                     PublishedDate = release.PublishedAt,
-                    ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
-                    DownloadUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
+                    ReleaseUrl = StoreDownloadUrl,
+                    DownloadUrl = StoreDownloadUrl,
                     IsMandatory = true,
                     IsBlocked = true,
                     MandatoryReason = disabledReason
@@ -72,7 +73,7 @@ namespace ForgeFlow
                 ReleaseName = release.Name ?? release.TagName ?? "Latest release",
                 ReleaseNotes = release.Body ?? "",
                 PublishedDate = release.PublishedAt,
-                ReleaseUrl = release.HtmlUrl ?? "https://github.com/Abo7atem/ForgeFlow/releases/latest",
+                ReleaseUrl = StoreDownloadUrl,
                 DownloadUrl = asset?.BrowserDownloadUrl ?? "",
                 DownloadFileName = asset?.Name ?? "",
                 DownloadSize = asset?.Size ?? 0,

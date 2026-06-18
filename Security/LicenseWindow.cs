@@ -51,14 +51,14 @@ namespace ForgeFlow.Security
             var headerText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             headerText.Children.Add(new TextBlock
             {
-                Text = "Activate ForgeFlow Lite",
+                Text = "Upgrade ForgeFlow to Pro",
                 FontSize = 22,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = Brushes.White
             });
             headerText.Children.Add(new TextBlock
             {
-                Text = "Paste your signed license key to unlock processing.",
+                Text = "Paste your signed license key to unlock unlimited exports, GPU modes, and advanced quality tools.",
                 FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166)),
                 Margin = new Thickness(1, 4, 0, 0)
@@ -117,7 +117,7 @@ namespace ForgeFlow.Security
 
             _statusText = new TextBlock
             {
-                Text = _licenseManager.IsLicenseValid() ? "License is active." : "Trial mode: 5 videos before activation.",
+                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Free plan: {TrialManager.MaxTrialVideos} successful exports on CPU. Upgrade to unlock everything.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166))
             };

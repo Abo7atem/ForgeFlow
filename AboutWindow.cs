@@ -8,7 +8,7 @@ namespace ForgeFlow
 {
     public sealed class AboutWindow : Window
     {
-        public AboutWindow(string licenseStatus)
+        public AboutWindow(string planStatus)
         {
             Title = "About ForgeFlow";
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
@@ -30,9 +30,9 @@ namespace ForgeFlow
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Left
             });
-            root.Children.Add(new TextBlock { Text = "ForgeFlow Lite", FontSize = 24, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 0) });
+            root.Children.Add(new TextBlock { Text = "ForgeFlow", FontSize = 24, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 0) });
             root.Children.Add(CreateLine("Version", version));
-            root.Children.Add(CreateLine("License", licenseStatus));
+            root.Children.Add(CreateLine("Plan", planStatus));
             root.Children.Add(CreateLine("Outputs", "Video 60FPS + TikTok30FPS"));
             root.Children.Add(CreateLine("Website", "4tiko.net"));
             root.Children.Add(new TextBlock

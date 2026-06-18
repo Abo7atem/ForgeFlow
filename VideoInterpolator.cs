@@ -65,11 +65,13 @@ namespace VideoProcessing
         public string FfprobeExecutablePath { get; }
 
         // RIFE
+        public bool EnableRifeInterpolation { get; set; } = true;
         public string RifeModelName { get; set; } = "rife-v4.26";
         public string RifeGpuId { get; set; } = "auto";
         public string RifeThreads { get; set; } = "1:2:2";
         public bool RifeEnableSpatialTta { get; set; } = false;
         public bool RifeEnableUhdMode { get; set; } = false;
+        public bool ProcessUpscaleBeforeRife { get; set; } = false;
 
         // Frames
         public string IntermediateFrameFormat { get; set; } = "png";
@@ -106,6 +108,17 @@ namespace VideoProcessing
 
         // Filters
         public bool EnableEnhanceFilters { get; set; } = true;
+        public double FinalOutputTimeScale { get; set; } = 2.0;
+        public string HardwareAccelerationMode { get; set; } = "cpu";
+
+        // Optional bundled upscaling
+        public bool EnableUpscale { get; set; } = false;
+        public string UpscaleExecutablePath { get; set; } = "";
+        public string UpscaleModelDirectory { get; set; } = "";
+        public string UpscaleModelName { get; set; } = "";
+        public string UpscaleDisplayName { get; set; } = "";
+        public string UpscaleEngine { get; set; } = "none";
+        public int UpscaleScale { get; set; } = 1;
 
         // Audio
         public string AudioArgs { get; set; } = "-c:a aac -b:a 192k";
@@ -152,74 +165,120 @@ namespace VideoProcessing
 
             SetupTempDirectory();
             string inputFramesDir = Path.Combine(_tempSessionDirectory, "input_frames");
-            string outputFramesDir = Path.Combine(_tempSessionDirectory, "output_frames");
 
             try
             {
                 Directory.CreateDirectory(inputFramesDir);
-                Directory.CreateDirectory(outputFramesDir);
 
                 var (originalFps, fpsResult) = await GetOriginalVideoFpsAsync(inputVideoPath, progressCallback, cancellationToken).ConfigureAwait(false);
                 if (originalFps == null)
                     return new ProcessExecutionResult(fpsResult.ExitCode, fpsResult.StandardOutput, "Failed to determine FPS: " + fpsResult.StandardError);
 
-                double rifeFps = originalFps.Value * 2.0; // RIFE x2
-                progressCallback?.Invoke($"Original FPS: {originalFps.Value:0.###} -> RIFE FPS: {rifeFps:0.###}");
+                double workingSequenceFps = EnableRifeInterpolation ? originalFps.Value * 2.0 : originalFps.Value;
+                progressCallback?.Invoke(EnableRifeInterpolation
+                    ? $"Original FPS: {originalFps.Value:0.###} -> RIFE FPS: {workingSequenceFps:0.###}"
+                    : $"Original FPS: {originalFps.Value:0.###} | RIFE disabled");
 
                 var (audioStartTime, _) = await GetAudioStartTimeAsync(inputVideoPath, progressCallback, cancellationToken).ConfigureAwait(false);
 
-                // Stage 0: Pre-filter (optional denoising on compressed video)
                 string effectiveInput = inputVideoPath;
                 if (EnablePreFilter)
                 {
-                    progressCallback?.Invoke("STAGE:0/5 Pre-filtering input");
+                    progressCallback?.Invoke("STAGE:0/0 Pre-filtering input");
                     var (pfPath, pfRes) = await PreFilterInputAsync(inputVideoPath, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
                     if (!pfRes.Success) return pfRes;
                     effectiveInput = pfPath;
                     progressCallback?.Invoke("Pre-filter done.");
                 }
 
-                // Stage 1/5: extract frames (0 to 20%).
-                progressCallback?.Invoke("STAGE:1/5 Extracting frames");
+                int totalStages = 1;
+                if (EnableRifeInterpolation) totalStages++;
+                if (EnableUpscale) totalStages++;
+                if (GeneratePc60) totalStages++;
+                if (GenerateTikTok30) totalStages += 2;
+
+                int stageNumber = 1;
+                progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Extracting frames");
                 progressCallback?.Invoke("PROGRESS:0%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
                 var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
                 if (!extract.Success) return extract;
 
-                // Stage 2/5: RIFE interpolation (20 to 70%).
-                progressCallback?.Invoke("STAGE:2/5 RIFE interpolation");
-                progressCallback?.Invoke("PROGRESS:20%");
-                int _pollInputCount = Directory.GetFiles(inputFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
-                int _pollExpected = _pollInputCount * 2;
-                using var _rifePollCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                var _rifePollTask = Task.Run(async () =>
+                string workingFramesDir = inputFramesDir;
+                string workingFramePattern = framePattern;
+
+                if (EnableUpscale && ProcessUpscaleBeforeRife)
                 {
-                    try
+                    stageNumber++;
+                    string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
+                    string upscaledBeforeDir = Path.Combine(_tempSessionDirectory, "upscaled_before_rife");
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledBeforeDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    if (!upscaleRes.Success) return upscaleRes;
+                    workingFramesDir = upscaledBeforeDir;
+                    workingFramePattern = framePattern;
+                    progressCallback?.Invoke("PROGRESS:35%");
+                }
+
+                if (EnableRifeInterpolation)
+                {
+                    stageNumber++;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} RIFE interpolation");
+                    progressCallback?.Invoke("PROGRESS:20%");
+
+                    string rifeFramesDir = Path.Combine(_tempSessionDirectory, ProcessUpscaleBeforeRife ? "rife_after_upscale" : "rife_output_frames");
+                    Directory.CreateDirectory(rifeFramesDir);
+
+                    int pollInputCount = Directory.GetFiles(workingFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
+                    int pollExpected = pollInputCount * 2;
+                    using var rifePollCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    var rifePollTask = Task.Run(async () =>
                     {
-                        while (!_rifePollCts.Token.IsCancellationRequested)
+                        try
                         {
-                            await Task.Delay(700, _rifePollCts.Token).ConfigureAwait(false);
-                            int _d = Directory.GetFiles(outputFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
-                            if (_pollExpected > 0)
+                            while (!rifePollCts.Token.IsCancellationRequested)
                             {
-                                int _p = 20 + (int)(Math.Min(1.0, (double)_d / _pollExpected) * 50);
-                                progressCallback?.Invoke($"PROGRESS:{_p}%");
+                                await Task.Delay(700, rifePollCts.Token).ConfigureAwait(false);
+                                int done = Directory.GetFiles(rifeFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
+                                if (pollExpected > 0)
+                                {
+                                    int progress = 20 + (int)(Math.Min(1.0, (double)done / pollExpected) * 50);
+                                    progressCallback?.Invoke($"PROGRESS:{progress}%");
+                                }
                             }
                         }
-                    }
-                    catch (OperationCanceledException) { }
-                }, CancellationToken.None);
-                var rife = await RunRifeInterpolationAsync(inputFramesDir, outputFramesDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
-                _rifePollCts.Cancel();
-                try { await _rifePollTask.ConfigureAwait(false); } catch { }
-                if (!rife.Success) return rife;
+                        catch (OperationCanceledException) { }
+                    }, CancellationToken.None);
 
-                int inputFrameCount = Directory.GetFiles(inputFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
-                int outputFrameCount = Directory.GetFiles(outputFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
-                progressCallback?.Invoke($"RIFE frames: input={inputFrameCount}, output={outputFrameCount}");
-                progressCallback?.Invoke("PROGRESS:70%");
+                    var rife = await RunRifeInterpolationAsync(workingFramesDir, rifeFramesDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    rifePollCts.Cancel();
+                    try { await rifePollTask.ConfigureAwait(false); } catch { }
+                    if (!rife.Success) return rife;
 
-                // Outputs
+                    int inputFrameCount = Directory.GetFiles(workingFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
+                    int outputFrameCount = Directory.GetFiles(rifeFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
+                    progressCallback?.Invoke($"RIFE frames: input={inputFrameCount}, output={outputFrameCount}");
+                    progressCallback?.Invoke("PROGRESS:70%");
+                    workingFramesDir = rifeFramesDir;
+                    workingFramePattern = $"%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
+                }
+
+                if (EnableUpscale && !ProcessUpscaleBeforeRife)
+                {
+                    stageNumber++;
+                    string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
+                    string upscaledAfterDir = Path.Combine(_tempSessionDirectory, "upscaled_after_rife");
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledAfterDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    if (!upscaleRes.Success) return upscaleRes;
+                    workingFramesDir = upscaledAfterDir;
+                    if (string.IsNullOrWhiteSpace(workingFramePattern))
+                        workingFramePattern = framePattern;
+                    progressCallback?.Invoke("PROGRESS:82%");
+                }
+
+                string encodeFramesDir = workingFramesDir;
+
                 string outDir = Path.GetDirectoryName(outputVideoPath) ?? "";
                 if (!Directory.Exists(outDir) && !string.IsNullOrWhiteSpace(outDir))
                     Directory.CreateDirectory(outDir);
@@ -230,36 +289,52 @@ namespace VideoProcessing
 
                 string pcOut = Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}");
                 string tt120Temp = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_TEMP{ext}");
+                string tikTok30PreFinal = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_PRE_FINAL{ext}");
                 string tikTok30Out = Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}");
 
-                string rifeOutPattern = $"%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
+                int tikTokEncodeFps = EnableRifeInterpolation ? TikTokEncodeFps : (int)Math.Round(TikTokTargetFps);
 
                 if (GeneratePc60)
                 {
-                    progressCallback?.Invoke("STAGE:3/5 Encoding Video 60FPS");
-                    var pcRes = await EncodePcAsync(pcOut, outputFramesDir, rifeOutPattern, rifeFps, inputVideoPath, audioStartTime,
+                    stageNumber++;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding Video 60FPS");
+                    var pcRes = await EncodePcWithFallbackAsync(pcOut, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
                         showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
                     if (!pcRes.Success) return pcRes;
-                    progressCallback?.Invoke("PROGRESS:85%");
+                    progressCallback?.Invoke("PROGRESS:90%");
                 }
 
                 if (GenerateTikTok30)
                 {
-                    progressCallback?.Invoke("STAGE:4/5 Preparing TikTok30FPS");
-                    var ttRes = await EncodeTikTok120Async(tt120Temp, outputFramesDir, rifeOutPattern, rifeFps, inputVideoPath, audioStartTime,
+                    stageNumber++;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Preparing TikTok30FPS");
+                    var ttRes = await EncodeTikTokWithFallbackAsync(tt120Temp, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
+                        tikTokEncodeFps,
                         showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
                     if (!ttRes.Success) return ttRes;
                     progressCallback?.Invoke("PROGRESS:95%");
 
-                    progressCallback?.Invoke("STAGE:5/5 Finalizing TikTok30FPS");
-                    var (tempFps, tempFpsResult) = await GetOriginalVideoFpsAsync(tt120Temp, progressCallback, cancellationToken).ConfigureAwait(false);
-                    if (tempFps == null || tempFps.Value <= 0)
-                        return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine temporary TikTok FPS: " + tempFpsResult.StandardError);
+                    if (EnableRifeInterpolation)
+                    {
+                        stageNumber++;
+                        progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Finalizing TikTok30FPS");
+                        var (tempFps, tempFpsResult) = await GetOriginalVideoFpsAsync(tt120Temp, progressCallback, cancellationToken).ConfigureAwait(false);
+                        if (tempFps == null || tempFps.Value <= 0)
+                            return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine temporary TikTok FPS: " + tempFpsResult.StandardError);
 
-                    double scaleToTargetFps = tempFps.Value / TikTokTargetFps;
-                    var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30Out, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!retimeRes.Success) return retimeRes;
+                        double scaleToTargetFps = tempFps.Value / TikTokTargetFps;
+                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (!retimeRes.Success) return retimeRes;
+                    }
+                    else
+                    {
+                        TryCopyFile(tt120Temp, tikTok30PreFinal);
+                    }
+
+                    progressCallback?.Invoke($"Applying TikTok final timing pass (itsscale {FinalOutputTimeScale:0.###})");
+                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    if (!tikTokFinalRes.Success) return tikTokFinalRes;
 
                     progressCallback?.Invoke("PROGRESS:100%");
                 }
@@ -306,6 +381,53 @@ namespace VideoProcessing
                    "unsharp=5:5:0.78";
         }
 
+        private bool UseNvidiaAcceleration => string.Equals(HardwareAccelerationMode, "nvidia", StringComparison.OrdinalIgnoreCase);
+        private bool UseAmdAcceleration => string.Equals(HardwareAccelerationMode, "amd", StringComparison.OrdinalIgnoreCase);
+
+        private string GetPcVideoEncoderArgs(bool forceCpu = false)
+        {
+            if (!forceCpu && UseNvidiaAcceleration)
+                return $"-c:v h264_nvenc -preset {MapNvencPreset(PcPreset)} -profile:v high -pix_fmt yuv420p -cq {Math.Max(1, PcCrf)}";
+
+            if (!forceCpu && UseAmdAcceleration)
+                return $"-c:v h264_amf -quality {MapAmfQuality(PcPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {Math.Max(1, PcCrf)} -qp_p {Math.Max(1, PcCrf)}";
+
+            return $"-c:v libx264 -crf {PcCrf} -preset {PcPreset} -tune {PcTune} -profile:v high -pix_fmt yuv420p";
+        }
+
+        private string GetTikTokVideoEncoderArgs(bool forceCpu = false)
+        {
+            if (!forceCpu && UseNvidiaAcceleration)
+                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTokPreset)} -profile:v high -pix_fmt yuv420p -cq {Math.Max(1, TikTokCrf)}";
+
+            if (!forceCpu && UseAmdAcceleration)
+                return $"-c:v h264_amf -quality {MapAmfQuality(TikTokPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {Math.Max(1, TikTokCrf)} -qp_p {Math.Max(1, TikTokCrf)}";
+
+            return $"-c:v libx264 -preset {TikTokPreset} -tune film -profile:v high -pix_fmt yuv420p";
+        }
+
+        private static string MapNvencPreset(string preset)
+        {
+            return preset.ToLowerInvariant() switch
+            {
+                "fast" => "p4",
+                "slow" => "p6",
+                "veryslow" => "p7",
+                _ => "p5"
+            };
+        }
+
+        private static string MapAmfQuality(string preset)
+        {
+            return preset.ToLowerInvariant() switch
+            {
+                "fast" => "speed",
+                "slow" => "balanced",
+                "veryslow" => "quality",
+                _ => "balanced"
+            };
+        }
+
         private async Task<ProcessExecutionResult> EncodePcAsync(
             string outputPath,
             string framesDir,
@@ -331,7 +453,68 @@ namespace VideoProcessing
             args.Append("-map 0:v:0 -map 1:a? ");
 
             args.Append($"-vf \"{vf}\" ");
-            args.Append($"-c:v libx264 -crf {PcCrf} -preset {PcPreset} -tune {PcTune} -profile:v high -pix_fmt yuv420p ");
+            args.Append(GetPcVideoEncoderArgs() + " ");
+            args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
+            args.Append($"{AudioArgs} ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append(QuotePath(outputPath));
+
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+        }
+
+        private async Task<ProcessExecutionResult> EncodePcWithFallbackAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double rifeFps,
+            string originalVideoPath,
+            double? audioOffset,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            var result = await EncodePcAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct).ConfigureAwait(false);
+            if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
+                return result;
+
+            string combined = (result.StandardError + "\n" + result.StandardOutput).ToLowerInvariant();
+            bool hardwareFailure = combined.Contains("no capable devices found") ||
+                                  combined.Contains("invalid argument") ||
+                                  combined.Contains("generic error in an external library") ||
+                                  combined.Contains("device") ||
+                                  combined.Contains("nvenc") ||
+                                  combined.Contains("amf");
+            if (!hardwareFailure)
+                return result;
+
+            cb?.Invoke("WARNING: Hardware encoder failed for Video 60FPS. Falling back to CPU encoder.");
+            return await EncodePcCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct).ConfigureAwait(false);
+        }
+
+        private async Task<ProcessExecutionResult> EncodePcCpuAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double rifeFps,
+            string originalVideoPath,
+            double? audioOffset,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            int outFps = PcFps;
+            int g = Math.Max(1, outFps * Math.Max(1, PcKeyintSeconds));
+            string vf = FilterGraphMild() + $",fps={outFps}";
+
+            var args = new StringBuilder();
+            args.Append("-y -nostdin ");
+            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
+            if (audioOffset.HasValue && audioOffset.Value > 0)
+                args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
+            args.Append($"-i {QuotePath(originalVideoPath)} ");
+            args.Append("-map 0:v:0 -map 1:a? ");
+            args.Append($"-vf \"{vf}\" ");
+            args.Append(GetPcVideoEncoderArgs(forceCpu: true) + " ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
             args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
@@ -347,11 +530,12 @@ namespace VideoProcessing
             double rifeFps,
             string originalVideoPath,
             double? audioOffset,
+            int outputFps,
             bool showCmd,
             Action<string>? cb,
             CancellationToken ct)
         {
-            int outFps = TikTokEncodeFps; // 120
+            int outFps = Math.Max(1, outputFps);
             int g = Math.Max(1, outFps * Math.Max(1, TikTokKeyintSeconds));
 
             string vf = FilterGraphMild() + $",fps={outFps}";
@@ -366,7 +550,72 @@ namespace VideoProcessing
             args.Append("-map 0:v:0 -map 1:a? ");
 
             args.Append($"-vf \"{vf}\" ");
-            args.Append($"-c:v libx264 -preset {TikTokPreset} -tune film -profile:v high -pix_fmt yuv420p ");
+            args.Append(GetTikTokVideoEncoderArgs() + " ");
+            args.Append(GetEffectiveTikTokRateControl() + " ");
+            args.Append($"-r {outFps} -vsync cfr ");
+            args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
+            args.Append($"{AudioArgs} ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append(QuotePath(outputPath));
+
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+        }
+
+        private async Task<ProcessExecutionResult> EncodeTikTokWithFallbackAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double rifeFps,
+            string originalVideoPath,
+            double? audioOffset,
+            int outputFps,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            var result = await EncodeTikTok120Async(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct).ConfigureAwait(false);
+            if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
+                return result;
+
+            string combined = (result.StandardError + "\n" + result.StandardOutput).ToLowerInvariant();
+            bool hardwareFailure = combined.Contains("no capable devices found") ||
+                                  combined.Contains("invalid argument") ||
+                                  combined.Contains("generic error in an external library") ||
+                                  combined.Contains("device") ||
+                                  combined.Contains("nvenc") ||
+                                  combined.Contains("amf");
+            if (!hardwareFailure)
+                return result;
+
+            cb?.Invoke("WARNING: Hardware encoder failed for TikTok30FPS. Falling back to CPU encoder.");
+            return await EncodeTikTokCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct).ConfigureAwait(false);
+        }
+
+        private async Task<ProcessExecutionResult> EncodeTikTokCpuAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double rifeFps,
+            string originalVideoPath,
+            double? audioOffset,
+            int outputFps,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            int outFps = Math.Max(1, outputFps);
+            int g = Math.Max(1, outFps * Math.Max(1, TikTokKeyintSeconds));
+            string vf = FilterGraphMild() + $",fps={outFps}";
+
+            var args = new StringBuilder();
+            args.Append("-y -nostdin ");
+            args.Append($"-framerate {rifeFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
+            if (audioOffset.HasValue && audioOffset.Value > 0)
+                args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
+            args.Append($"-i {QuotePath(originalVideoPath)} ");
+            args.Append("-map 0:v:0 -map 1:a? ");
+            args.Append($"-vf \"{vf}\" ");
+            args.Append(GetTikTokVideoEncoderArgs(forceCpu: true) + " ");
             args.Append(GetEffectiveTikTokRateControl() + " ");
             args.Append($"-r {outFps} -vsync cfr ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
@@ -395,6 +644,17 @@ namespace VideoProcessing
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
         }
 
+        private async Task<ProcessExecutionResult> ApplyFinalTimeScaleAsync(
+            string inputPath,
+            string outputPath,
+            double timeScale,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            return await RetimeCopyAsync(inputPath, outputPath, timeScale, showCmd, cb, ct).ConfigureAwait(false);
+        }
+
         private void LogInternal(string message, bool isError = false)
         {
             if (VerboseLogging)
@@ -405,12 +665,66 @@ namespace VideoProcessing
 
         private string? ValidateTooling()
         {
-            string toolsDir = Path.GetDirectoryName(RifeExecutablePath) ?? "";
-            string rifeModelDir = Path.Combine(toolsDir, RifeModelName);
-            if (!Directory.Exists(rifeModelDir))
-                return $"RIFE model folder not found: {rifeModelDir}";
+            if (EnableRifeInterpolation)
+            {
+                string toolsDir = Path.GetDirectoryName(RifeExecutablePath) ?? "";
+                string rifeModelDir = Path.Combine(toolsDir, RifeModelName);
+                if (!Directory.Exists(rifeModelDir))
+                    return $"RIFE model folder not found: {rifeModelDir}";
+            }
+
+            if (EnableUpscale)
+            {
+                if (string.IsNullOrWhiteSpace(UpscaleExecutablePath) || !File.Exists(UpscaleExecutablePath))
+                    return "Upscale executable not found.";
+
+                if (string.IsNullOrWhiteSpace(UpscaleModelDirectory) || !Directory.Exists(UpscaleModelDirectory))
+                    return "Upscale model directory not found.";
+
+                if (string.IsNullOrWhiteSpace(UpscaleModelName))
+                    return "Upscale model name is empty.";
+
+                string paramPath = Path.Combine(UpscaleModelDirectory, UpscaleModelName + ".param");
+                string binPath = Path.Combine(UpscaleModelDirectory, UpscaleModelName + ".bin");
+                if (!File.Exists(paramPath) || !File.Exists(binPath))
+                    return "Upscale model files are missing.";
+            }
 
             return null;
+        }
+
+        private async Task<ProcessExecutionResult> UpscaleFramesAsync(
+            string inputDir,
+            string outputDir,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            Directory.CreateDirectory(outputDir);
+            string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
+            cb?.Invoke($"Upscale model: {upscaleLabel} [{UpscaleModelName}] ({UpscaleScale}x)");
+
+            var argsList = new List<string>
+            {
+                "-i", QuotePath(inputDir),
+                "-o", QuotePath(outputDir),
+                "-s", Math.Max(1, UpscaleScale).ToString(CultureInfo.InvariantCulture),
+                "-f", IntermediateFrameFormat.ToLowerInvariant(),
+                "-j", "1:2:2",
+                "-m", QuotePath(UpscaleModelDirectory),
+                "-n", UpscaleModelName
+            };
+
+            if (string.Equals(UpscaleEngine, "realcugan", StringComparison.OrdinalIgnoreCase))
+                argsList.AddRange(new[] { "-c", "3" });
+
+            return await RunProcessAsync(UpscaleExecutablePath, string.Join(" ", argsList), showCmd, Path.GetDirectoryName(UpscaleExecutablePath), cb, ct).ConfigureAwait(false);
+        }
+
+        private static void TryCopyFile(string sourcePath, string destinationPath)
+        {
+            if (File.Exists(sourcePath))
+                File.Copy(sourcePath, destinationPath, true);
         }
 
         private async Task<ProcessExecutionResult> RunProcessAsync(
@@ -539,7 +853,12 @@ namespace VideoProcessing
         private async Task<ProcessExecutionResult> ExtractFramesAsync(
             string inputPath, string outputDir, string pattern, bool useNvdec, bool showCmd, Action<string>? cb, CancellationToken ct)
         {
-            string hw = useNvdec ? "-hwaccel nvdec " : "";
+            string hw = "";
+            if (useNvdec && UseNvidiaAcceleration)
+                hw = "-hwaccel cuda ";
+            else if (UseAmdAcceleration)
+                hw = "-hwaccel d3d11va ";
+
             var args = new StringBuilder();
             args.Append($"-y -nostdin {hw}-i {QuotePath(inputPath)} -vsync vfr ");
 

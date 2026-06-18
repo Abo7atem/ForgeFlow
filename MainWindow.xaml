@@ -305,20 +305,20 @@
 
     </Window.Resources>
 
-    <Grid Margin="20" Background="#0A0A0A">
+    <Grid Margin="16" Background="#0A0A0A">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="14"/>
+            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="14"/>
+            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="10"/>
+            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
+            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
+            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -350,12 +350,33 @@
             <StackPanel Grid.Column="2"
                         VerticalAlignment="Center"
                         HorizontalAlignment="Right">
+                <Border x:Name="PlanBadgeBorder"
+                        Background="#243144"
+                        BorderBrush="#4A90E2"
+                        BorderThickness="1"
+                        CornerRadius="999"
+                        Padding="10,4"
+                        HorizontalAlignment="Right">
+                    <TextBlock x:Name="PlanBadgeTextBlock"
+                               Text="FREE PLAN"
+                               Foreground="#B9D8FF"
+                               FontSize="10"
+                               FontWeight="SemiBold"
+                               TextAlignment="Center"/>
+                </Border>
                 <TextBlock x:Name="LicenseStatusTextBlock"
                            Text="Checking license..."
                            Foreground="#8E8E93"
                            FontSize="12"
                            FontWeight="SemiBold"
-                           TextAlignment="Right"/>
+                           TextAlignment="Right"
+                           Margin="0,6,0,0"/>
+                <TextBlock x:Name="PlanDetailsTextBlock"
+                           Text="Free plan: CPU only"
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextAlignment="Right"
+                           Margin="0,4,0,0"/>
                 <TextBlock x:Name="VersionTextBlock"
                            Text="v..."
                            Foreground="#6E6E73"
@@ -399,12 +420,8 @@
                     Height="34" Click="BrowseOutput_Click"/>
         </Grid>
 
-        <Grid Grid.Row="5" Margin="110,4,0,10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0">
+        <Grid Grid.Row="5" Margin="0,4,0,6">
+            <StackPanel Visibility="Collapsed">
                 <TextBlock x:Name="ToolsStatusTextBlock"
                            Text="Checking tools..."
                            Foreground="#6E6E73"
@@ -431,36 +448,175 @@
                            FontSize="11"
                            TextWrapping="Wrap"
                            Margin="0,3,0,0"/>
+                <TextBlock x:Name="UpscaleInsightTextBlock"
+                           Text="Quality boost is off. RIFE keeps the original resolution."
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,3,0,0"/>
+                <TextBlock x:Name="StartHintTextBlock"
+                           Text="Start is waiting for startup checks."
+                           Foreground="#6E6E73"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,3,0,0"/>
             </StackPanel>
-            <StackPanel Grid.Column="1"
-                        Orientation="Horizontal"
-                        HorizontalAlignment="Right"
+            <StackPanel HorizontalAlignment="Right"
                         VerticalAlignment="Top">
-                <Button Content="Test Tools"
-                        Height="26"
-                        MinWidth="82"
-                        Padding="10,0"
-                        FontSize="11"
-                        Margin="8,0,0,0"
-                        Click="TestToolsButton_Click"/>
-                <ComboBox x:Name="PresetComboBox"
-                          Width="92"
-                          Height="26"
-                          FontSize="11"
-                          Margin="6,0,0,0"
-                          SelectionChanged="PresetComboBox_SelectionChanged"
-                          SelectedIndex="1">
-                    <ComboBoxItem Content="Fast"/>
-                    <ComboBoxItem Content="Balanced"/>
-                    <ComboBoxItem Content="Quality"/>
-                </ComboBox>
-                <Button Content="About"
-                        Height="26"
-                        MinWidth="64"
-                        Padding="10,0"
-                        FontSize="11"
-                        Margin="6,0,0,0"
-                        Click="AboutButton_Click"/>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+                    <Button Content="Test Tools"
+                            Height="26"
+                            MinWidth="82"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="8,0,0,0"
+                            Click="TestToolsButton_Click"/>
+                    <ComboBox x:Name="PresetComboBox"
+                              Width="92"
+                              Height="26"
+                              FontSize="11"
+                              Margin="6,0,0,0"
+                              SelectionChanged="PresetComboBox_SelectionChanged"
+                              SelectedIndex="1">
+                        <ComboBoxItem Content="Fast"/>
+                        <ComboBoxItem Content="Balanced"/>
+                        <ComboBoxItem Content="Quality"/>
+                    </ComboBox>
+                    <Button Content="About"
+                            Height="26"
+                            MinWidth="64"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="6,0,0,0"
+                            Click="AboutButton_Click"/>
+                    <Button x:Name="SupportButton"
+                            Content="Support"
+                            Height="26"
+                            MinWidth="72"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="6,0,0,0"
+                            Click="SupportButton_Click"/>
+                </StackPanel>
+                <WrapPanel HorizontalAlignment="Right"
+                           Margin="0,8,0,0"
+                           ItemWidth="Auto"
+                           Orientation="Horizontal">
+                    <StackPanel Margin="0,0,10,0">
+                        <DockPanel LastChildFill="False"
+                                   Margin="0,0,0,3">
+                            <TextBlock x:Name="HardwareTitleTextBlock"
+                                       Text="Hardware"
+                                       Foreground="#8E8E93"
+                                       FontSize="11"
+                                       VerticalAlignment="Center"/>
+                            <Button x:Name="HardwareUpgradeButton"
+                                    Content="Upgrade"
+                                    Height="22"
+                                    MinWidth="62"
+                                    Padding="8,0"
+                                    FontSize="10"
+                                    Margin="8,0,0,0"
+                                    Click="InlineUpgradeButton_Click"/>
+                        </DockPanel>
+                        <ComboBox x:Name="HardwareComboBox"
+                                  Width="165"
+                                  Height="30"
+                                  FontSize="11"
+                                  SelectionChanged="HardwareComboBox_SelectionChanged">
+                            <ComboBoxItem Content="CPU" Tag="cpu"/>
+                            <ComboBoxItem Content="NVIDIA NVENC/NVDEC" Tag="nvidia"/>
+                            <ComboBoxItem Content="AMD AMF" Tag="amd"/>
+                        </ComboBox>
+                        <TextBlock x:Name="HardwareHintTextBlock"
+                                   Text=""
+                                   Foreground="#6E6E73"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Width="165"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock x:Name="MotionTitleTextBlock"
+                                   Text="Motion"
+                                   HorizontalAlignment="Left"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="MotionComboBox"
+                                  Width="125"
+                                  Height="30"
+                                  FontSize="11"
+                                  SelectionChanged="MotionComboBox_SelectionChanged">
+                            <ComboBoxItem Content="RIFE On" Tag="on"/>
+                            <ComboBoxItem Content="RIFE Off" Tag="off"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,10,0">
+                        <DockPanel LastChildFill="False"
+                                   Margin="0,0,0,3">
+                            <TextBlock x:Name="QualityBoostTitleTextBlock"
+                                       Text="Quality Boost"
+                                       Foreground="#8E8E93"
+                                       FontSize="11"
+                                       VerticalAlignment="Center"/>
+                            <Button x:Name="QualityUpgradeButton"
+                                    Content="Upgrade"
+                                    Height="22"
+                                    MinWidth="62"
+                                    Padding="8,0"
+                                    FontSize="10"
+                                    Margin="8,0,0,0"
+                                    Click="InlineUpgradeButton_Click"/>
+                        </DockPanel>
+                        <ComboBox x:Name="UpscaleComboBox"
+                                  Width="190"
+                                  Height="30"
+                                  FontSize="11"
+                                  SelectionChanged="UpscaleComboBox_SelectionChanged"/>
+                        <TextBlock x:Name="QualityBoostHintTextBlock"
+                                   Text=""
+                                   Foreground="#6E6E73"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Width="190"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <StackPanel>
+                        <DockPanel LastChildFill="False"
+                                   Margin="0,0,0,3">
+                            <TextBlock x:Name="PipelineOrderTitleTextBlock"
+                                       Text="Pipeline Order"
+                                       Foreground="#8E8E93"
+                                       FontSize="11"
+                                       VerticalAlignment="Center"/>
+                            <Button x:Name="PipelineUpgradeButton"
+                                    Content="Upgrade"
+                                    Height="22"
+                                    MinWidth="62"
+                                    Padding="8,0"
+                                    FontSize="10"
+                                    Margin="8,0,0,0"
+                                    Click="InlineUpgradeButton_Click"/>
+                        </DockPanel>
+                        <ComboBox x:Name="ProcessingOrderComboBox"
+                                  Width="185"
+                                  Height="30"
+                                  FontSize="11"
+                                  SelectionChanged="ProcessingOrderComboBox_SelectionChanged">
+                            <ComboBoxItem Content="RIFE then Upscale" Tag="rife-then-upscale"/>
+                            <ComboBoxItem Content="Upscale then RIFE" Tag="upscale-then-rife"/>
+                        </ComboBox>
+                        <TextBlock x:Name="PipelineHintTextBlock"
+                                   Text=""
+                                   Foreground="#6E6E73"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Width="185"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </WrapPanel>
             </StackPanel>
         </Grid>
 
@@ -641,6 +797,15 @@
                           Margin="0,0,14,0"
                           Checked="CompletionSoundCheckBox_Changed"
                           Unchecked="CompletionSoundCheckBox_Changed"/>
+                <CheckBox x:Name="SummaryCheckBox"
+                          Content="Summary"
+                          IsChecked="True"
+                          Foreground="#8E8E93"
+                          FontSize="12"
+                          VerticalAlignment="Center"
+                          Margin="0,0,14,0"
+                          Checked="SummaryCheckBox_Changed"
+                          Unchecked="SummaryCheckBox_Changed"/>
                 <TextBlock Text="جميع الحقوق محفوظة A.Hatem T-Zone SYR"
                            Foreground="#8E8E93"
                            FontSize="12"
@@ -704,7 +869,7 @@
                     IsEnabled="False"
                     Click="RetryButton_Click"/>
             <Button x:Name="ActivationButton"
-                    Content="Activation"
+                    Content="Upgrade"
                     MinWidth="110" Height="36"
                     Padding="16,0"
                     Margin="0,0,8,0"

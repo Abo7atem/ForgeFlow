@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.40</Version>
-    <FileVersion>1.0.40.0</FileVersion>
-    <AssemblyVersion>1.0.40.0</AssemblyVersion>
+    <Version>1.0.42</Version>
+    <FileVersion>1.0.42.0</FileVersion>
+    <AssemblyVersion>1.0.42.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -34,8 +34,7 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Include="Tools\tools.sha256" CopyToOutputDirectory="Always" />
-    <None Include="..\version.txt">
-      <Link>version.txt</Link>
+    <None Include="version.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>

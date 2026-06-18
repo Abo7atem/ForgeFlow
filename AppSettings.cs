@@ -13,6 +13,12 @@ namespace ForgeFlow
         public string LastInputDirectory { get; set; } = "";
         public string LastOutputDirectory { get; set; } = "";
         public bool PlayCompletionSound { get; set; } = true;
+        public bool ShowProcessingSummary { get; set; } = true;
+        public string SelectedUpscaleProfileId { get; set; } = "off";
+        public bool EnableRife { get; set; } = true;
+        public string ProcessingOrder { get; set; } = "rife-then-upscale";
+        public string HardwareAccelerationMode { get; set; } = "cpu";
+        public bool HasSeenWelcomeScreen { get; set; }
 
         public static AppSettings Load()
         {
