@@ -55,7 +55,7 @@ namespace ForgeFlow
             root.Children.Add(CreateCard(
                 "Current plan",
                 planStatus,
-                "Free includes 2 successful exports on CPU. Pro removes the export limit and unlocks advanced processing."));
+                "Free trial includes 3 processing attempts on CPU. Pro removes the attempt limit and unlocks advanced processing."));
 
             root.Children.Add(CreateCard(
                 "Why support",
