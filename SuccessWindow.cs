@@ -13,6 +13,7 @@ namespace ForgeFlow
         public SuccessWindow(string video60Path, string tikTok30Path)
         {
             Title = "ForgeFlow Complete";
+            NativeWindowTheme.Apply(this);
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
             Width = 560;
             Height = 310;

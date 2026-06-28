@@ -32,6 +32,58 @@
             <Setter Property="Padding" Value="8,4"/>
         </Style>
 
+        <!-- Dark ScrollBars -->
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="#111113"/>
+            <Setter Property="Foreground" Value="#FF9F0A"/>
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Height" Value="10"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid x:Name="Root"
+                              Width="10"
+                              Background="{TemplateBinding Background}">
+                            <Track x:Name="PART_Track"
+                                   IsDirectionReversed="True"
+                                   Focusable="False">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border x:Name="ThumbBorder"
+                                                        Background="#6A4420"
+                                                        CornerRadius="5"
+                                                        Margin="2"/>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background" Value="#FF9F0A"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background" Value="#FFB340"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter TargetName="Root" Property="Width" Value="Auto"/>
+                                <Setter TargetName="Root" Property="Height" Value="10"/>
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Dark Button -->
         <Style TargetType="Button">
             <Setter Property="Background" Value="#2C2C2E"/>
@@ -237,7 +289,7 @@
                                                                             <Thumb>
                                                                                 <Thumb.Template>
                                                                                     <ControlTemplate TargetType="Thumb">
-                                                                                        <Border Background="#48484A" CornerRadius="3"/>
+                                                                                        <Border Background="#6A4420" CornerRadius="3"/>
                                                                                     </ControlTemplate>
                                                                                 </Thumb.Template>
                                                                             </Thumb>
@@ -358,8 +410,8 @@
                         Padding="10,4"
                         HorizontalAlignment="Right">
                     <TextBlock x:Name="PlanBadgeTextBlock"
-                               Text="FREE PLAN"
-                               Foreground="#B9D8FF"
+                               Text="TRIAL"
+                               Foreground="#FFE0AD"
                                FontSize="10"
                                FontWeight="SemiBold"
                                TextAlignment="Center"/>
@@ -372,7 +424,7 @@
                            TextAlignment="Right"
                            Margin="0,6,0,0"/>
                 <TextBlock x:Name="PlanDetailsTextBlock"
-                           Text="Free plan: CPU only"
+                           Text="3 trial attempts"
                            Foreground="#6E6E73"
                            FontSize="11"
                            TextAlignment="Right"

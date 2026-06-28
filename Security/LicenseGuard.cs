@@ -29,10 +29,10 @@ namespace ForgeFlow.Security
 
             var (allowed, remaining, tampered) = TrialManager.CheckTrial();
             if (tampered)
-                return GuardDecision.Deny("Free plan data or system time was tampered with. Upgrade to Pro is required.");
+                return GuardDecision.Deny("Trial data or system time was tampered with. License activation is required.");
 
             if (!allowed)
-                return GuardDecision.Deny($"The free trial is finished. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts before Pro is required.");
+                return GuardDecision.Deny($"Trial ended. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts before activation is required.");
 
             return GuardDecision.AllowTrial(remaining, TrialManager.GetTrialCount());
         }
@@ -144,13 +144,13 @@ namespace ForgeFlow.Security
                 var (_, _, tampered) = TrialManager.CheckTrial();
                 if (tampered)
                 {
-                    message = "Free plan data or system time was tampered with during processing.";
+                    message = "Trial data or system time was tampered with during processing.";
                     return false;
                 }
 
                 if (TrialManager.GetTrialCount() != session.TrialCountAtStart)
                 {
-                    message = "Free plan export counter changed during processing.";
+                    message = "Trial attempt counter changed during processing.";
                     return false;
                 }
             }

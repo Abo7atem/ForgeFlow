@@ -12,6 +12,7 @@ namespace ForgeFlow
         public SupportWindow(string planStatus)
         {
             Title = "Support ForgeFlow";
+            NativeWindowTheme.Apply(this);
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
             Width = 560;
             Height = 430;
@@ -46,7 +47,7 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "ForgeFlow stays easy to try for everyone. Upgrading to Pro unlocks unlimited exports, GPU modes, and advanced quality tools.",
+                Text = "ForgeFlow includes 3 trial attempts. Activate Pro for unlimited processing, GPU modes, and advanced quality tools.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
@@ -55,7 +56,7 @@ namespace ForgeFlow
             root.Children.Add(CreateCard(
                 "Current plan",
                 planStatus,
-                "Free trial includes 3 processing attempts on CPU. Pro removes the attempt limit and unlocks advanced processing."));
+                "Trial includes 3 processing attempts only. Pro activation removes the attempt limit and unlocks advanced processing."));
 
             root.Children.Add(CreateCard(
                 "Why support",

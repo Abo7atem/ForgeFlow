@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.44</Version>
-    <FileVersion>1.0.44.0</FileVersion>
-    <AssemblyVersion>1.0.44.0</AssemblyVersion>
+    <Version>1.0.45</Version>
+    <FileVersion>1.0.45.0</FileVersion>
+    <AssemblyVersion>1.0.45.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

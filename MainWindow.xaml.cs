@@ -67,6 +67,7 @@ namespace ForgeFlow
         public MainWindow()
         {
             InitializeComponent();
+            NativeWindowTheme.Apply(this);
             _licenseManager = new LicenseManager();
             _licenseGuard = new LicenseGuard(_licenseManager);
             _updateChecker = new UpdateChecker();
@@ -209,8 +210,8 @@ namespace ForgeFlow
             {
                 MessageBox.Show(
                     this,
-                    $"Free trial includes {TrialManager.MaxTrialVideos} processing attempts only. Upgrade to Pro to continue.\n\nالخطة التجريبية تسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. قم بالترقية إلى Pro للمتابعة.",
-                    "Free Plan Limit | حد الخطة المجانية",
+                    $"Trial ended. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to continue.\n\nانتهت التجربة. يسمح ForgeFlow بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. فعّل الترخيص للمتابعة.",
+                    "Trial Ended | انتهت التجربة",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 return;
@@ -640,7 +641,7 @@ namespace ForgeFlow
                 return "Output cannot be the same file as input.";
 
             if (IsFreePlan() && GetRemainingFreeExports() <= 0)
-                return $"Free trial reached its {TrialManager.MaxTrialVideos} attempt limit. Open Support to upgrade to Pro.";
+                return $"Trial ended after {TrialManager.MaxTrialVideos} attempts. Activate a license to continue.";
 
             return "Ready to process.";
         }
@@ -871,7 +872,7 @@ namespace ForgeFlow
                 return "Pro activated | unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
 
             int remaining = GetRemainingFreeExports();
-            return $"Free trial | {remaining} of {TrialManager.MaxTrialVideos} attempts remaining | CPU only";
+            return $"Trial | {remaining}/{TrialManager.MaxTrialVideos} attempts left | CPU";
         }
 
         private void ApplyPlanRestrictionsToUi(bool showMessage)
@@ -908,7 +909,7 @@ namespace ForgeFlow
             {
                 MessageBox.Show(
                     this,
-                    $"Free trial allows {TrialManager.MaxTrialVideos} processing attempts and uses CPU only. Quality Boost, Upscale then RIFE, and hardware acceleration are available in Pro only.\n\nالخطة التجريبية تسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط وتعمل على CPU فقط. ميزة Quality Boost وخيار Upscale then RIFE والتسريع العتادي متاحة فقط في Pro.",
+                    $"Trial mode allows {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to unlock Pro features.\n\nوضع التجربة يسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. فعّل الترخيص لفتح ميزات Pro.",
                     "Pro Features | ميزات Pro",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -924,7 +925,7 @@ namespace ForgeFlow
                 return true;
 
             SelectComboItemByTag(HardwareComboBox, FreePlanHardwareMode);
-            MessageBox.Show(this, "Hardware acceleration is available in Pro only. Free uses CPU.\n\nالتسريع العتادي متاح فقط في Pro. الخطة المجانية تستخدم CPU.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Hardware acceleration requires Pro activation.\n\nالتسريع العتادي يتطلب تفعيل Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
 
@@ -958,24 +959,24 @@ namespace ForgeFlow
         {
             bool freePlan = IsFreePlan();
 
-            HardwareTitleTextBlock.Text = freePlan ? "Hardware [CPU in Free]" : "Hardware";
+            HardwareTitleTextBlock.Text = freePlan ? "Hardware [CPU]" : "Hardware";
             MotionTitleTextBlock.Text = "Motion";
             QualityBoostTitleTextBlock.Text = freePlan ? "Quality Boost [Pro]" : "Quality Boost";
-            PipelineOrderTitleTextBlock.Text = freePlan ? "Pipeline Order [Pro advanced]" : "Pipeline Order";
+            PipelineOrderTitleTextBlock.Text = freePlan ? "Pipeline Order [Pro]" : "Pipeline Order";
             HardwareUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
             QualityUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
             PipelineUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
             HardwareUpgradeButton.Content = "Upgrade | ترقية";
             QualityUpgradeButton.Content = "Upgrade | ترقية";
             PipelineUpgradeButton.Content = "Upgrade | ترقية";
-            HardwareHintTextBlock.Text = freePlan ? "Free uses CPU only for reliable basic exports.\nالخطة المجانية تعمل على CPU فقط لتصديرات أساسية مستقرة." : "Choose CPU, NVIDIA, or AMD based on your hardware.\nاختر CPU أو NVIDIA أو AMD حسب جهازك.";
-            QualityBoostHintTextBlock.Text = freePlan ? "Quality Boost is locked in Free. Upgrade to Pro to unlock upscale models.\nميزة Quality Boost مقفلة في الخطة المجانية. قم بالترقية إلى Pro لفتح نماذج التكبير." : "Use bundled upscale models to improve output detail.\nاستخدم نماذج التكبير المضمنة لتحسين تفاصيل الإخراج.";
-            PipelineHintTextBlock.Text = freePlan ? "Advanced pipeline order is locked in Free.\nترتيب المعالجة المتقدم مقفل في الخطة المجانية." : "Choose the order that fits your quality and VRAM budget.\nاختر ترتيب المعالجة المناسب للجودة وذاكرة VRAM.";
+            HardwareHintTextBlock.Text = freePlan ? "" : "Choose CPU, NVIDIA, or AMD based on your hardware.\nاختر CPU أو NVIDIA أو AMD حسب جهازك.";
+            QualityBoostHintTextBlock.Text = freePlan ? "" : "Use bundled upscale models to improve output detail.\nاستخدم نماذج التكبير المضمنة لتحسين تفاصيل الإخراج.";
+            PipelineHintTextBlock.Text = freePlan ? "" : "Choose the order that fits your quality and VRAM budget.\nاختر ترتيب المعالجة المناسب للجودة وذاكرة VRAM.";
 
-            SetComboItemContent(HardwareComboBox, "cpu", "CPU", "Free plan uses CPU for reliable exports.");
+            SetComboItemContent(HardwareComboBox, "cpu", "CPU", "Trial mode uses CPU.");
             SetComboItemContent(HardwareComboBox, "nvidia", freePlan ? "NVIDIA NVENC/NVDEC [Pro]" : "NVIDIA NVENC/NVDEC", freePlan ? "Upgrade to Pro to unlock NVIDIA acceleration." : "Use NVIDIA hardware decoding and encoding when supported.");
             SetComboItemContent(HardwareComboBox, "amd", freePlan ? "AMD AMF [Pro]" : "AMD AMF", freePlan ? "Upgrade to Pro to unlock AMD acceleration." : "Use AMD hardware decoding and encoding when supported.");
-            SetComboItemContent(ProcessingOrderComboBox, "rife-then-upscale", "RIFE then Upscale", freePlan ? "Free plan keeps this safe default order." : "Interpolate first, then upscale the final frames.");
+            SetComboItemContent(ProcessingOrderComboBox, "rife-then-upscale", "RIFE then Upscale", freePlan ? "Default trial pipeline." : "Interpolate first, then upscale the final frames.");
             SetComboItemContent(ProcessingOrderComboBox, "upscale-then-rife", freePlan ? "Upscale then RIFE [Pro]" : "Upscale then RIFE", freePlan ? "Upgrade to Pro to unlock this heavier pipeline order." : "Upscale first, then let RIFE interpolate the larger frames.");
 
             foreach (ComboBoxItem item in UpscaleComboBox.Items.OfType<ComboBoxItem>())
@@ -1535,27 +1536,27 @@ namespace ForgeFlow
 
             if (decision.Allowed && decision.Mode == LicenseAccessMode.Trial)
             {
-                PlanBadgeTextBlock.Text = "FREE PLAN";
-                PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(36, 49, 68));
-                PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(74, 144, 226));
-                PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(185, 216, 255));
-                LicenseStatusTextBlock.Text = "Plan: Free";
-                LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
-                PlanDetailsTextBlock.Text = $"{decision.Remaining} of {TrialManager.MaxTrialVideos} exports remaining | CPU only";
-                PlanDetailsTextBlock.Foreground = Brushes.LightSkyBlue;
+                PlanBadgeTextBlock.Text = "TRIAL";
+                PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(44, 32, 19));
+                PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 159, 10));
+                PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 224, 173));
+                LicenseStatusTextBlock.Text = $"{decision.Remaining}/{TrialManager.MaxTrialVideos} trials left";
+                LicenseStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 179, 64));
+                PlanDetailsTextBlock.Text = "Activate license after trial";
+                PlanDetailsTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(142, 142, 147));
                 ActivationButton.Content = "Upgrade";
                 ApplyPlanRestrictionsToUi(showMessage: false);
                 RefreshActionButtons();
                 return;
             }
 
-            PlanBadgeTextBlock.Text = "FREE LIMIT";
+            PlanBadgeTextBlock.Text = "TRIAL ENDED";
             PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(74, 41, 16));
             PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 159, 10));
             PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 223, 179));
-            LicenseStatusTextBlock.Text = "Plan: Free";
+            LicenseStatusTextBlock.Text = "Activation required";
             LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
-            PlanDetailsTextBlock.Text = $"0 of {TrialManager.MaxTrialVideos} exports remaining | Upgrade to Pro to continue";
+            PlanDetailsTextBlock.Text = $"0/{TrialManager.MaxTrialVideos} trials left";
             PlanDetailsTextBlock.Foreground = Brushes.Orange;
             ActivationButton.Content = "Upgrade";
             ApplyPlanRestrictionsToUi(showMessage: false);

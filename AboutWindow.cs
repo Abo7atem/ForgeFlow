@@ -11,6 +11,7 @@ namespace ForgeFlow
         public AboutWindow(string planStatus)
         {
             Title = "About ForgeFlow";
+            NativeWindowTheme.Apply(this);
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
             Width = 480;
             Height = 360;

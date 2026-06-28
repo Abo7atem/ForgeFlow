@@ -12,7 +12,8 @@ namespace ForgeFlow
 
         public WelcomeWindow()
         {
-            Title = "Welcome | مرحبا بك في ForgeFlow";
+            Title = "Welcome to ForgeFlow";
+            NativeWindowTheme.Apply(this);
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
             Width = 560;
             Height = 420;
@@ -38,7 +39,7 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "Welcome to ForgeFlow | مرحبا بك في ForgeFlow",
+                Text = "Welcome to ForgeFlow",
                 FontSize = 24,
                 FontWeight = FontWeights.SemiBold,
                 Margin = new Thickness(0, 16, 0, 0),
@@ -47,21 +48,21 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "Start for free with clear limits, then upgrade only when you need more speed, GPU acceleration, and advanced quality tools.\n\nابدأ مجانا بحدود واضحة، ثم قم بالترقية فقط عندما تحتاج سرعة أكبر، وتسريع GPU، وأدوات جودة متقدمة.",
+                Text = "Try ForgeFlow with 3 processing attempts. After that, activation is required to continue and unlock Pro features.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
             });
 
             root.Children.Add(CreateCard(
-                "Free plan | الخطة المجانية",
-                "3 processing attempts on CPU only\n3 محاولات معالجة فقط على CPU",
-                "Great for trying the workflow before paying.\nمناسبة لتجربة سير العمل قبل الدفع."));
+                "Trial",
+                "3 processing attempts only",
+                "After the trial, activate a license to continue."));
 
             root.Children.Add(CreateCard(
-                "Pro plan | خطة Pro",
-                "Unlimited exports, NVIDIA/AMD, Quality Boost, advanced pipeline options\nتصديرات غير محدودة، NVIDIA/AMD، تحسين الجودة، وخيارات معالجة متقدمة",
-                "Best for real production work and faster delivery.\nالأفضل للعمل الحقيقي والإنتاج الأسرع."));
+                "Pro",
+                "Unlimited processing, NVIDIA/AMD, Quality Boost, and advanced pipeline options",
+                "Best for production work and faster delivery."));
 
             var buttons = new StackPanel
             {
@@ -70,16 +71,16 @@ namespace ForgeFlow
                 Margin = new Thickness(0, 24, 0, 0)
             };
 
-            var continueFree = CreateButton("Continue Free | المتابعة مجانا", false);
-            continueFree.Margin = new Thickness(0, 0, 8, 0);
-            continueFree.Click += (_, _) =>
+            var continueTrial = CreateButton("Continue Trial", false);
+            continueTrial.Margin = new Thickness(0, 0, 8, 0);
+            continueTrial.Click += (_, _) =>
             {
                 OpenUpgrade = false;
                 DialogResult = true;
                 Close();
             };
 
-            var upgrade = CreateButton("Upgrade to Pro | الترقية إلى Pro", true);
+            var upgrade = CreateButton("Activate Pro", true);
             upgrade.Click += (_, _) =>
             {
                 OpenUpgrade = true;
@@ -87,7 +88,7 @@ namespace ForgeFlow
                 Close();
             };
 
-            buttons.Children.Add(continueFree);
+            buttons.Children.Add(continueTrial);
             buttons.Children.Add(upgrade);
             root.Children.Add(buttons);
 

@@ -15,6 +15,7 @@ namespace ForgeFlow.Security
         {
             _licenseManager = licenseManager;
             Title = "ForgeFlow Activation";
+            ForgeFlow.NativeWindowTheme.Apply(this);
             Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/ForgeFlow.ico"));
             Width = 680;
             Height = 500;
@@ -117,7 +118,7 @@ namespace ForgeFlow.Security
 
             _statusText = new TextBlock
             {
-                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Free trial: {TrialManager.MaxTrialVideos} processing attempts on CPU. Upgrade to unlock everything.",
+                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Trial: {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to continue after trial.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166))
             };

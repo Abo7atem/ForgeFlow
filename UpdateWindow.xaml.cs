@@ -18,6 +18,7 @@ namespace ForgeFlow
         public UpdateWindow(UpdateInfo update)
         {
             InitializeComponent();
+            NativeWindowTheme.Apply(this);
             _update = update;
 
             VersionTextBlock.Text =
