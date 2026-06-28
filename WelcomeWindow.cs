@@ -55,7 +55,7 @@ namespace ForgeFlow
 
             root.Children.Add(CreateCard(
                 "Free plan | الخطة المجانية",
-                "2 successful exports on CPU only\nتصديران ناجحان فقط على المعالج CPU",
+                "3 processing attempts on CPU only\n3 محاولات معالجة فقط على CPU",
                 "Great for trying the workflow before paying.\nمناسبة لتجربة سير العمل قبل الدفع."));
 
             root.Children.Add(CreateCard(
