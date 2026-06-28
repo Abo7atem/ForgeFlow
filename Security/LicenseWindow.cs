@@ -117,7 +117,7 @@ namespace ForgeFlow.Security
 
             _statusText = new TextBlock
             {
-                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Free plan: {TrialManager.MaxTrialVideos} successful exports on CPU. Upgrade to unlock everything.",
+                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Free trial: {TrialManager.MaxTrialVideos} processing attempts on CPU. Upgrade to unlock everything.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166))
             };
