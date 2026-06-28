@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace ForgeFlow.Security
@@ -32,7 +32,7 @@ namespace ForgeFlow.Security
                 return GuardDecision.Deny("Free plan data or system time was tampered with. Upgrade to Pro is required.");
 
             if (!allowed)
-                return GuardDecision.Deny($"The free plan limit is finished. ForgeFlow allows {TrialManager.MaxTrialVideos} successful exports before Pro is required.");
+                return GuardDecision.Deny($"The free trial is finished. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts before Pro is required.");
 
             return GuardDecision.AllowTrial(remaining, TrialManager.GetTrialCount());
         }
@@ -44,6 +44,11 @@ namespace ForgeFlow.Security
                 return null;
 
             int trialCountForSession = decision.TrialCount;
+            if (decision.Mode == LicenseAccessMode.Trial)
+            {
+                TrialManager.IncrementTrial();
+                trialCountForSession = TrialManager.GetTrialCount();
+            }
 
             var session = new GuardSession
             {
@@ -94,16 +99,6 @@ namespace ForgeFlow.Security
             {
                 message = "Processing did not pass all required license checkpoints.";
                 return false;
-            }
-
-            if (session.Mode == LicenseAccessMode.Trial)
-            {
-                TrialManager.IncrementTrial();
-                if (TrialManager.GetTrialCount() != session.TrialCountAtStart + 1)
-                {
-                    message = "Free plan export counter failed to advance.";
-                    return false;
-                }
             }
 
             session.Completed = true;
