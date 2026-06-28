@@ -7,7 +7,7 @@ namespace ForgeFlow.Security
 {
     public static class TrialManager
     {
-        public const int MaxTrialVideos = 2;
+        public const int MaxTrialVideos = 3;
         private const string RegistryPath = @"SOFTWARE\ForgeFlow\Lite";
         private const string MarkerRegistryPath = @"SOFTWARE\ForgeFlow\LiteMarker";
         private const string ValueData = "TrialData";
