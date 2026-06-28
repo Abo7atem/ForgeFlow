@@ -47,7 +47,7 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "ForgeFlow includes 3 trial attempts. Activate Pro for unlimited processing, GPU modes, and advanced quality tools.",
+                Text = "ForgeFlow includes 3 full-feature trial attempts. Activate a license for unlimited processing after trial.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
@@ -56,7 +56,7 @@ namespace ForgeFlow
             root.Children.Add(CreateCard(
                 "Current plan",
                 planStatus,
-                "Trial includes 3 processing attempts only. Pro activation removes the attempt limit and unlocks advanced processing."));
+                "Trial includes 3 full-feature processing attempts. License activation removes the attempt limit."));
 
             root.Children.Add(CreateCard(
                 "Why support",
@@ -70,7 +70,7 @@ namespace ForgeFlow
                 Orientation = Orientation.Horizontal
             };
 
-            buttons.Children.Add(CreateActionButton("Upgrade to Pro", "https://4tiko.net"));
+            buttons.Children.Add(CreateActionButton("Buy License", "https://4tiko.net"));
             buttons.Children.Add(CreateActionButton("Support Project", "https://4tiko.net"));
             buttons.Children.Add(CreateActionButton("YouTube", "https://youtube.com/@bo_7atemm"));
             buttons.Children.Add(CreateActionButton("Discord", "https://discord.gg/jF5uNEyg8r"));

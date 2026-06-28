@@ -48,7 +48,7 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "Try ForgeFlow with 3 processing attempts. After that, activation is required to continue and unlock Pro features.",
+                Text = "Try all ForgeFlow modes and options for 3 processing attempts. After that, activation is required to continue.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
@@ -56,13 +56,13 @@ namespace ForgeFlow
 
             root.Children.Add(CreateCard(
                 "Trial",
-                "3 processing attempts only",
-                "After the trial, activate a license to continue."));
+                "3 full-feature processing attempts",
+                "All modes are available during trial. After that, activate a license to continue."));
 
             root.Children.Add(CreateCard(
-                "Pro",
-                "Unlimited processing, NVIDIA/AMD, Quality Boost, and advanced pipeline options",
-                "Best for production work and faster delivery."));
+                "License",
+                "Unlimited processing after activation",
+                "Best for production work and continued delivery."));
 
             var buttons = new StackPanel
             {
@@ -80,7 +80,7 @@ namespace ForgeFlow
                 Close();
             };
 
-            var upgrade = CreateButton("Activate Pro", true);
+            var upgrade = CreateButton("Activate / Buy", true);
             upgrade.Click += (_, _) =>
             {
                 OpenUpgrade = true;

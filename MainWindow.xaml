@@ -543,9 +543,9 @@
                             Margin="6,0,0,0"
                             Click="AboutButton_Click"/>
                     <Button x:Name="SupportButton"
-                            Content="Support"
+                            Content="Activate / Buy"
                             Height="26"
-                            MinWidth="72"
+                            MinWidth="102"
                             Padding="10,0"
                             FontSize="11"
                             Margin="6,0,0,0"
@@ -563,14 +563,6 @@
                                        Foreground="#8E8E93"
                                        FontSize="11"
                                        VerticalAlignment="Center"/>
-                            <Button x:Name="HardwareUpgradeButton"
-                                    Content="Upgrade"
-                                    Height="22"
-                                    MinWidth="62"
-                                    Padding="8,0"
-                                    FontSize="10"
-                                    Margin="8,0,0,0"
-                                    Click="InlineUpgradeButton_Click"/>
                         </DockPanel>
                         <ComboBox x:Name="HardwareComboBox"
                                   Width="165"
@@ -613,14 +605,6 @@
                                        Foreground="#8E8E93"
                                        FontSize="11"
                                        VerticalAlignment="Center"/>
-                            <Button x:Name="QualityUpgradeButton"
-                                    Content="Upgrade"
-                                    Height="22"
-                                    MinWidth="62"
-                                    Padding="8,0"
-                                    FontSize="10"
-                                    Margin="8,0,0,0"
-                                    Click="InlineUpgradeButton_Click"/>
                         </DockPanel>
                         <ComboBox x:Name="UpscaleComboBox"
                                   Width="190"
@@ -643,14 +627,6 @@
                                        Foreground="#8E8E93"
                                        FontSize="11"
                                        VerticalAlignment="Center"/>
-                            <Button x:Name="PipelineUpgradeButton"
-                                    Content="Upgrade"
-                                    Height="22"
-                                    MinWidth="62"
-                                    Padding="8,0"
-                                    FontSize="10"
-                                    Margin="8,0,0,0"
-                                    Click="InlineUpgradeButton_Click"/>
                         </DockPanel>
                         <ComboBox x:Name="ProcessingOrderComboBox"
                                   Width="185"
@@ -921,7 +897,7 @@
                     IsEnabled="False"
                     Click="RetryButton_Click"/>
             <Button x:Name="ActivationButton"
-                    Content="Upgrade"
+                    Content="Activate / Buy"
                     MinWidth="110" Height="36"
                     Padding="16,0"
                     Margin="0,0,8,0"

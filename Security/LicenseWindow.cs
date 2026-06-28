@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -10,6 +11,7 @@ namespace ForgeFlow.Security
         private readonly LicenseManager _licenseManager;
         private readonly TextBox _keyBox;
         private readonly TextBlock _statusText;
+        private const string StoreUrl = "https://4tiko.net";
 
         public LicenseWindow(LicenseManager licenseManager)
         {
@@ -52,14 +54,14 @@ namespace ForgeFlow.Security
             var headerText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             headerText.Children.Add(new TextBlock
             {
-                Text = "Upgrade ForgeFlow to Pro",
+                Text = "Activate or Buy ForgeFlow",
                 FontSize = 22,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = Brushes.White
             });
             headerText.Children.Add(new TextBlock
             {
-                Text = "Paste your signed license key to unlock unlimited exports, GPU modes, and advanced quality tools.",
+                Text = "Trial includes 3 full-feature processing attempts. Paste a license key or open the store to continue after trial.",
                 FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166)),
                 Margin = new Thickness(1, 4, 0, 0)
@@ -118,7 +120,7 @@ namespace ForgeFlow.Security
 
             _statusText = new TextBlock
             {
-                Text = _licenseManager.IsLicenseValid() ? "Pro license is active." : $"Trial: {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to continue after trial.",
+                Text = _licenseManager.IsLicenseValid() ? "License is active." : $"Trial: {TrialManager.MaxTrialVideos} full-feature processing attempts. Activate a license to continue after trial.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166))
             };
@@ -130,10 +132,14 @@ namespace ForgeFlow.Security
             activate.Background = new SolidColorBrush(Color.FromRgb(10, 132, 255));
             activate.BorderBrush = new SolidColorBrush(Color.FromRgb(10, 132, 255));
             activate.Margin = new Thickness(0, 0, 8, 0);
+            var buy = CreateDarkButton("Buy License", 120);
+            buy.Margin = new Thickness(0, 0, 8, 0);
             var close = CreateDarkButton("Close", 96);
             activate.Click += Activate_Click;
+            buy.Click += (_, _) => OpenStore();
             close.Click += (_, _) => Close();
             buttons.Children.Add(activate);
+            buttons.Children.Add(buy);
             buttons.Children.Add(close);
             Grid.SetRow(buttons, 8);
             root.Children.Add(buttons);
@@ -185,6 +191,11 @@ namespace ForgeFlow.Security
                 DialogResult = true;
                 Close();
             }
+        }
+
+        private static void OpenStore()
+        {
+            Process.Start(new ProcessStartInfo(StoreUrl) { UseShellExecute = true });
         }
     }
 }

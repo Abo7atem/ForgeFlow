@@ -35,8 +35,6 @@ namespace ForgeFlow
         {
             ".mp4", ".mov", ".mkv", ".webm", ".avi"
         };
-        private const string FreePlanHardwareMode = "cpu";
-        private const string StartupSupportUrl = "https://4tiko.net";
         private const string BundledToolsFolderName = "Tools";
         private const string RealEsrganExeName = "realesrgan-ncnn-vulkan.exe";
         private const string RealCuganExeName = "realcugan-ncnn-vulkan.exe";
@@ -115,7 +113,6 @@ namespace ForgeFlow
                 UpdateLicenseStatus();
                 ShowWelcomeWindowIfNeeded();
                 UpdateLicenseStatus();
-                _ = OpenStartupSupportPageIfNeededAsync();
                 await RunStartupChecksAsync();
                 CleanupOldUpdateInstallers();
                 CleanupOldSupportReports();
@@ -425,15 +422,6 @@ namespace ForgeFlow
 
         private void SupportButton_Click(object sender, RoutedEventArgs e)
         {
-            var support = new SupportWindow(GetCurrentPlanDisplayText())
-            {
-                Owner = this
-            };
-            support.ShowDialog();
-        }
-
-        private void InlineUpgradeButton_Click(object sender, RoutedEventArgs e)
-        {
             OpenActivationWindow();
         }
 
@@ -485,9 +473,6 @@ namespace ForgeFlow
             if (!_uiInitialized)
                 return;
 
-            if (!EnsureUpscaleSelectionAllowed())
-                return;
-
             RefreshUpscaleInsight();
             RefreshOutputPreview();
             RefreshProcessingOrderState();
@@ -503,9 +488,6 @@ namespace ForgeFlow
             if (!_uiInitialized)
                 return;
 
-            if (!EnsureHardwareSelectionAllowed())
-                return;
-
             RefreshOutputPreview();
             if (_settings == null)
                 return;
@@ -519,7 +501,6 @@ namespace ForgeFlow
             if (!_uiInitialized)
                 return;
 
-            ApplyPlanRestrictionsToUi(showMessage: false);
             RefreshUpscaleInsight();
             RefreshOutputPreview();
             RefreshProcessingOrderState();
@@ -533,9 +514,6 @@ namespace ForgeFlow
         private void ProcessingOrderComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_uiInitialized)
-                return;
-
-            if (!EnsureProcessingOrderAllowed())
                 return;
 
             RefreshUpscaleInsight();
@@ -872,123 +850,38 @@ namespace ForgeFlow
                 return "Pro activated | unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
 
             int remaining = GetRemainingFreeExports();
-            return $"Trial | {remaining}/{TrialManager.MaxTrialVideos} attempts left | CPU";
+            return $"Trial | {remaining}/{TrialManager.MaxTrialVideos} attempts left | full features";
         }
 
         private void ApplyPlanRestrictionsToUi(bool showMessage)
         {
             RefreshPlanOptionLabels();
-
-            if (IsProActivated())
-            {
-                RefreshProcessingOrderState();
-                return;
-            }
-
-            bool changed = false;
-
-            if (!string.Equals(GetSelectedHardwareMode(), FreePlanHardwareMode, StringComparison.OrdinalIgnoreCase))
-            {
-                SelectComboItemByTag(HardwareComboBox, FreePlanHardwareMode);
-                changed = true;
-            }
-
-            if (GetSelectedUpscaleProfile().Engine != "none")
-            {
-                SelectComboItemByTag(UpscaleComboBox, "off");
-                changed = true;
-            }
-
-            if (string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase))
-            {
-                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
-                changed = true;
-            }
-
-            if (showMessage && changed)
-            {
-                MessageBox.Show(
-                    this,
-                    $"Trial mode allows {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to unlock Pro features.\n\nوضع التجربة يسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. فعّل الترخيص لفتح ميزات Pro.",
-                    "Pro Features | ميزات Pro",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
-        }
-
-        private bool EnsureHardwareSelectionAllowed()
-        {
-            if (IsProActivated())
-                return true;
-
-            if (string.Equals(GetSelectedHardwareMode(), FreePlanHardwareMode, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            SelectComboItemByTag(HardwareComboBox, FreePlanHardwareMode);
-            MessageBox.Show(this, "Hardware acceleration requires Pro activation.\n\nالتسريع العتادي يتطلب تفعيل Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
-        }
-
-        private bool EnsureUpscaleSelectionAllowed()
-        {
-            if (IsProActivated())
-                return true;
-
-            if (GetSelectedUpscaleProfile().Engine == "none")
-                return true;
-
-            SelectComboItemByTag(UpscaleComboBox, "off");
-            MessageBox.Show(this, "Quality Boost is available in Pro only.\n\nميزة Quality Boost متاحة فقط في Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
-        }
-
-        private bool EnsureProcessingOrderAllowed()
-        {
-            if (IsProActivated())
-                return true;
-
-            if (!string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
-            MessageBox.Show(this, "Upscale then RIFE is available in Pro only.\n\nخيار Upscale then RIFE متاح فقط في Pro.", "Pro Feature | ميزة Pro", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
+            RefreshProcessingOrderState();
         }
 
         private void RefreshPlanOptionLabels()
         {
-            bool freePlan = IsFreePlan();
-
-            HardwareTitleTextBlock.Text = freePlan ? "Hardware [CPU]" : "Hardware";
+            HardwareTitleTextBlock.Text = "Hardware";
             MotionTitleTextBlock.Text = "Motion";
-            QualityBoostTitleTextBlock.Text = freePlan ? "Quality Boost [Pro]" : "Quality Boost";
-            PipelineOrderTitleTextBlock.Text = freePlan ? "Pipeline Order [Pro]" : "Pipeline Order";
-            HardwareUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
-            QualityUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
-            PipelineUpgradeButton.Visibility = freePlan ? Visibility.Visible : Visibility.Collapsed;
-            HardwareUpgradeButton.Content = "Upgrade | ترقية";
-            QualityUpgradeButton.Content = "Upgrade | ترقية";
-            PipelineUpgradeButton.Content = "Upgrade | ترقية";
-            HardwareHintTextBlock.Text = freePlan ? "" : "Choose CPU, NVIDIA, or AMD based on your hardware.\nاختر CPU أو NVIDIA أو AMD حسب جهازك.";
-            QualityBoostHintTextBlock.Text = freePlan ? "" : "Use bundled upscale models to improve output detail.\nاستخدم نماذج التكبير المضمنة لتحسين تفاصيل الإخراج.";
-            PipelineHintTextBlock.Text = freePlan ? "" : "Choose the order that fits your quality and VRAM budget.\nاختر ترتيب المعالجة المناسب للجودة وذاكرة VRAM.";
+            QualityBoostTitleTextBlock.Text = "Quality Boost";
+            PipelineOrderTitleTextBlock.Text = "Pipeline Order";
+            HardwareHintTextBlock.Text = "All modes are available during the 3-attempt trial.\nكل المودات متاحة خلال التجربة ذات 3 محاولات.";
+            QualityBoostHintTextBlock.Text = "";
+            PipelineHintTextBlock.Text = "";
 
-            SetComboItemContent(HardwareComboBox, "cpu", "CPU", "Trial mode uses CPU.");
-            SetComboItemContent(HardwareComboBox, "nvidia", freePlan ? "NVIDIA NVENC/NVDEC [Pro]" : "NVIDIA NVENC/NVDEC", freePlan ? "Upgrade to Pro to unlock NVIDIA acceleration." : "Use NVIDIA hardware decoding and encoding when supported.");
-            SetComboItemContent(HardwareComboBox, "amd", freePlan ? "AMD AMF [Pro]" : "AMD AMF", freePlan ? "Upgrade to Pro to unlock AMD acceleration." : "Use AMD hardware decoding and encoding when supported.");
-            SetComboItemContent(ProcessingOrderComboBox, "rife-then-upscale", "RIFE then Upscale", freePlan ? "Default trial pipeline." : "Interpolate first, then upscale the final frames.");
-            SetComboItemContent(ProcessingOrderComboBox, "upscale-then-rife", freePlan ? "Upscale then RIFE [Pro]" : "Upscale then RIFE", freePlan ? "Upgrade to Pro to unlock this heavier pipeline order." : "Upscale first, then let RIFE interpolate the larger frames.");
+            SetComboItemContent(HardwareComboBox, "cpu", "CPU", "Software processing.");
+            SetComboItemContent(HardwareComboBox, "nvidia", "NVIDIA NVENC/NVDEC", "Use NVIDIA hardware decoding and encoding when supported.");
+            SetComboItemContent(HardwareComboBox, "amd", "AMD AMF", "Use AMD hardware decoding and encoding when supported.");
+            SetComboItemContent(ProcessingOrderComboBox, "rife-then-upscale", "RIFE then Upscale", "Interpolate first, then upscale the final frames.");
+            SetComboItemContent(ProcessingOrderComboBox, "upscale-then-rife", "Upscale then RIFE", "Upscale first, then let RIFE interpolate the larger frames.");
 
             foreach (ComboBoxItem item in UpscaleComboBox.Items.OfType<ComboBoxItem>())
             {
                 string id = item.Tag as string ?? string.Empty;
                 UpscaleProfile profile = _upscaleProfiles.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
                     ?? _upscaleProfiles.First();
-                bool proOnly = profile.Engine != "none";
-                item.Content = proOnly && freePlan ? profile.DisplayName + " [Pro]" : profile.DisplayName;
-                item.ToolTip = proOnly && freePlan
-                    ? "Upgrade to Pro to unlock Quality Boost."
-                    : profile.Insight;
+                item.Content = profile.DisplayName;
+                item.ToolTip = profile.Insight;
             }
         }
 
@@ -1020,16 +913,6 @@ namespace ForgeFlow
             welcome.ShowDialog();
             if (welcome.OpenUpgrade)
                 OpenActivationWindow();
-        }
-
-        private async Task OpenStartupSupportPageIfNeededAsync()
-        {
-            await Task.Delay(TimeSpan.FromSeconds(2.5));
-
-            if (!IsLoaded || !IsVisible || !IsFreePlan())
-                return;
-
-            OpenUpdateUrl(StartupSupportUrl);
         }
 
         private UpscaleProfile GetSelectedUpscaleProfile()
@@ -1118,9 +1001,6 @@ namespace ForgeFlow
 
         private string GetEffectiveHardwareMode()
         {
-            if (IsFreePlan())
-                return FreePlanHardwareMode;
-
             string selected = GetSelectedHardwareMode();
             if (!string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase))
                 return selected;
@@ -1134,9 +1014,6 @@ namespace ForgeFlow
 
         private string GetEffectiveHardwareModeDisplayName()
         {
-            if (IsFreePlan())
-                return "CPU (Free plan)";
-
             string selected = GetSelectedHardwareMode();
             string effective = GetEffectiveHardwareMode();
             if (string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase) && !string.Equals(effective, selected, StringComparison.OrdinalIgnoreCase))
@@ -1221,8 +1098,8 @@ namespace ForgeFlow
 
             var openActivation = MessageBox.Show(
                 this,
-                decision.Message + "\n\nهل تريد فتح صفحة الدعم والترقية الآن؟",
-                "Upgrade to Pro",
+                decision.Message + "\n\nهل تريد فتح التفعيل أو المتجر الآن؟",
+                "Activation Required",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
 
@@ -1542,9 +1419,9 @@ namespace ForgeFlow
                 PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 224, 173));
                 LicenseStatusTextBlock.Text = $"{decision.Remaining}/{TrialManager.MaxTrialVideos} trials left";
                 LicenseStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 179, 64));
-                PlanDetailsTextBlock.Text = "Activate license after trial";
+                PlanDetailsTextBlock.Text = "Full feature trial";
                 PlanDetailsTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(142, 142, 147));
-                ActivationButton.Content = "Upgrade";
+                ActivationButton.Content = "Activate / Buy";
                 ApplyPlanRestrictionsToUi(showMessage: false);
                 RefreshActionButtons();
                 return;
@@ -1558,7 +1435,7 @@ namespace ForgeFlow
             LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
             PlanDetailsTextBlock.Text = $"0/{TrialManager.MaxTrialVideos} trials left";
             PlanDetailsTextBlock.Foreground = Brushes.Orange;
-            ActivationButton.Content = "Upgrade";
+            ActivationButton.Content = "Activate / Buy";
             ApplyPlanRestrictionsToUi(showMessage: false);
             RefreshActionButtons();
         }
