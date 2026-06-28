@@ -209,7 +209,7 @@ namespace ForgeFlow
             {
                 MessageBox.Show(
                     this,
-                    "Free plan includes 2 successful exports only. Upgrade to Pro to continue.\n\nالخطة المجانية تسمح بتصديرين ناجحين فقط. قم بالترقية إلى Pro للمتابعة.",
+                    $"Free trial includes {TrialManager.MaxTrialVideos} processing attempts only. Upgrade to Pro to continue.\n\nالخطة التجريبية تسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. قم بالترقية إلى Pro للمتابعة.",
                     "Free Plan Limit | حد الخطة المجانية",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -640,7 +640,7 @@ namespace ForgeFlow
                 return "Output cannot be the same file as input.";
 
             if (IsFreePlan() && GetRemainingFreeExports() <= 0)
-                return "Free plan reached its 2 export limit. Open Support to upgrade to Pro.";
+                return $"Free trial reached its {TrialManager.MaxTrialVideos} attempt limit. Open Support to upgrade to Pro.";
 
             return "Ready to process.";
         }
@@ -871,7 +871,7 @@ namespace ForgeFlow
                 return "Pro activated | unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
 
             int remaining = GetRemainingFreeExports();
-            return $"Free plan | {remaining} of {TrialManager.MaxTrialVideos} exports remaining | CPU only";
+            return $"Free trial | {remaining} of {TrialManager.MaxTrialVideos} attempts remaining | CPU only";
         }
 
         private void ApplyPlanRestrictionsToUi(bool showMessage)
@@ -908,7 +908,7 @@ namespace ForgeFlow
             {
                 MessageBox.Show(
                     this,
-                    "Free plan allows 2 successful exports and uses CPU only. Quality Boost, Upscale then RIFE, and hardware acceleration are available in Pro only.\n\nالخطة المجانية تسمح بتصديرين ناجحين فقط وتعمل على CPU فقط. ميزة Quality Boost وخيار Upscale then RIFE والتسريع العتادي متاحة فقط في Pro.",
+                    $"Free trial allows {TrialManager.MaxTrialVideos} processing attempts and uses CPU only. Quality Boost, Upscale then RIFE, and hardware acceleration are available in Pro only.\n\nالخطة التجريبية تسمح بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط وتعمل على CPU فقط. ميزة Quality Boost وخيار Upscale then RIFE والتسريع العتادي متاحة فقط في Pro.",
                     "Pro Features | ميزات Pro",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
