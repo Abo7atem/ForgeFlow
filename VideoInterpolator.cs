@@ -226,7 +226,7 @@ namespace VideoProcessing
                     string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
                     string upscaledBeforeDir = Path.Combine(_tempSessionDirectory, "upscaled_before_rife");
-                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledBeforeDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledBeforeDir, showConsoleWindows, progressCallback, cancellationToken, 20, 35).ConfigureAwait(false);
                     if (!upscaleRes.Success) return upscaleRes;
                     workingFramesDir = upscaledBeforeDir;
                     workingFramePattern = framePattern;
@@ -282,7 +282,7 @@ namespace VideoProcessing
                     string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
                     string upscaledAfterDir = Path.Combine(_tempSessionDirectory, "upscaled_after_rife");
-                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledAfterDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledAfterDir, showConsoleWindows, progressCallback, cancellationToken, 70, 82).ConfigureAwait(false);
                     if (!upscaleRes.Success) return upscaleRes;
                     workingFramesDir = upscaledAfterDir;
                     if (string.IsNullOrWhiteSpace(workingFramePattern))
@@ -779,11 +779,14 @@ namespace VideoProcessing
             string outputDir,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            int progressStart,
+            int progressEnd)
         {
             Directory.CreateDirectory(outputDir);
             string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
             cb?.Invoke($"Upscale model: {upscaleLabel} [{UpscaleModelName}] ({UpscaleScale}x)");
+            cb?.Invoke($"PROGRESS:{progressStart}%");
 
             var argsList = new List<string>
             {
@@ -799,7 +802,66 @@ namespace VideoProcessing
             if (string.Equals(UpscaleEngine, "realcugan", StringComparison.OrdinalIgnoreCase))
                 argsList.AddRange(new[] { "-c", "3" });
 
-            return await RunProcessAsync(UpscaleExecutablePath, string.Join(" ", argsList), showCmd, Path.GetDirectoryName(UpscaleExecutablePath), cb, ct).ConfigureAwait(false);
+            int expectedFrames = Directory.GetFiles(inputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
+            using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var pollTask = Task.Run(async () =>
+            {
+                try
+                {
+                    int lastReportedProgress = -1;
+                    int lastReportedFrames = -1;
+                    while (!pollCts.Token.IsCancellationRequested)
+                    {
+                        await Task.Delay(900, pollCts.Token).ConfigureAwait(false);
+                        int done = Directory.Exists(outputDir)
+                            ? Directory.GetFiles(outputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length
+                            : 0;
+
+                        if (expectedFrames > 0)
+                        {
+                            double ratio = Math.Min(1.0, (double)done / expectedFrames);
+                            int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
+                            progress = Math.Clamp(progress, progressStart, progressEnd);
+                            if (progress != lastReportedProgress)
+                            {
+                                cb?.Invoke($"PROGRESS:{progress}%");
+                                lastReportedProgress = progress;
+                            }
+                        }
+
+                        if (done != lastReportedFrames)
+                        {
+                            cb?.Invoke(expectedFrames > 0
+                                ? $"Upscale: {done}/{expectedFrames} frames"
+                                : $"Upscale: {done} frames");
+                            lastReportedFrames = done;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { }
+            }, CancellationToken.None);
+
+            ProcessExecutionResult result;
+            try
+            {
+                result = await RunProcessAsync(UpscaleExecutablePath, string.Join(" ", argsList), showCmd, Path.GetDirectoryName(UpscaleExecutablePath), cb, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                pollCts.Cancel();
+                try { await pollTask.ConfigureAwait(false); } catch { }
+            }
+
+            int finalDone = Directory.Exists(outputDir)
+                ? Directory.GetFiles(outputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length
+                : 0;
+            cb?.Invoke(expectedFrames > 0
+                ? $"Upscale: {finalDone}/{expectedFrames} frames"
+                : $"Upscale: {finalDone} frames");
+            if (result.Success)
+                cb?.Invoke($"PROGRESS:{progressEnd}%");
+
+            return result;
         }
 
         private static void TryCopyFile(string sourcePath, string destinationPath)
