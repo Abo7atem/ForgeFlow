@@ -179,6 +179,12 @@ namespace VideoProcessing
                 var (originalFps, fpsResult) = await GetOriginalVideoFpsAsync(inputVideoPath, progressCallback, cancellationToken).ConfigureAwait(false);
                 if (originalFps == null)
                     return new ProcessExecutionResult(fpsResult.ExitCode, fpsResult.StandardOutput, "Failed to determine FPS: " + fpsResult.StandardError);
+                var (durationSeconds, durationResult) = await GetVideoDurationAsync(inputVideoPath, progressCallback, cancellationToken).ConfigureAwait(false);
+                if (durationSeconds == null)
+                    progressCallback?.Invoke("WARNING: Could not determine video duration for detailed progress.");
+                int expectedExtractFrames = durationSeconds.HasValue
+                    ? Math.Max(1, (int)Math.Ceiling(durationSeconds.Value * originalFps.Value))
+                    : 0;
 
                 double workingSequenceFps = EnableRifeInterpolation ? originalFps.Value * 2.0 : originalFps.Value;
                 progressCallback?.Invoke(EnableRifeInterpolation
@@ -208,14 +214,15 @@ namespace VideoProcessing
                 progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Extracting frames");
                 progressCallback?.Invoke("PROGRESS:0%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
-                var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, 0, 20).ConfigureAwait(false);
                 if (!extract.Success && useNvdecForDecoding && IsHardwareDecodeFailure(extract))
                 {
                     progressCallback?.Invoke("NVDEC decode failed; retrying frame extraction with CPU decode.");
                     ClearFrameDirectory(inputFramesDir);
-                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, 0, 20).ConfigureAwait(false);
                 }
                 if (!extract.Success) return extract;
+                progressCallback?.Invoke("PROGRESS:20%");
 
                 string workingFramesDir = inputFramesDir;
                 string workingFramePattern = framePattern;
@@ -323,7 +330,7 @@ namespace VideoProcessing
                     stageNumber++;
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding Video 60FPS");
                     var pcRes = await EncodePcWithFallbackAsync(pcOut, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
-                        showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 86, 90).ConfigureAwait(false);
                     if (!pcRes.Success) return pcRes;
                     progressCallback?.Invoke("PROGRESS:90%");
                 }
@@ -334,7 +341,7 @@ namespace VideoProcessing
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Preparing TikTok30FPS");
                     var ttRes = await EncodeTikTokWithFallbackAsync(tt120Temp, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
                         tikTokEncodeFps,
-                        showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 90, 95).ConfigureAwait(false);
                     if (!ttRes.Success) return ttRes;
                     progressCallback?.Invoke("PROGRESS:95%");
 
@@ -347,7 +354,7 @@ namespace VideoProcessing
                             return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine temporary TikTok FPS: " + tempFpsResult.StandardError);
 
                         double scaleToTargetFps = tempFps.Value / TikTokTargetFps;
-                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken)
+                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 95, 98)
                             .ConfigureAwait(false);
                         if (!retimeRes.Success) return retimeRes;
                     }
@@ -357,7 +364,7 @@ namespace VideoProcessing
                     }
 
                     progressCallback?.Invoke($"Applying TikTok final timing pass (itsscale {FinalOutputTimeScale:0.###})");
-                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 98, 100).ConfigureAwait(false);
                     if (!tikTokFinalRes.Success) return tikTokFinalRes;
 
                     progressCallback?.Invoke("PROGRESS:100%");
@@ -461,7 +468,10 @@ namespace VideoProcessing
             double? audioOffset,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
             int outFps = PcFps;
             int g = Math.Max(1, outFps * Math.Max(1, PcKeyintSeconds));
@@ -480,10 +490,10 @@ namespace VideoProcessing
             args.Append(GetPcVideoEncoderArgs() + " ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "Video 60FPS"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodePcWithFallbackAsync(
@@ -495,9 +505,12 @@ namespace VideoProcessing
             double? audioOffset,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
-            var result = await EncodePcAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct).ConfigureAwait(false);
+            var result = await EncodePcAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
             if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
                 return result;
 
@@ -512,7 +525,7 @@ namespace VideoProcessing
                 return result;
 
             cb?.Invoke("WARNING: Hardware encoder failed for Video 60FPS. Falling back to CPU encoder.");
-            return await EncodePcCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct).ConfigureAwait(false);
+            return await EncodePcCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodePcCpuAsync(
@@ -524,7 +537,10 @@ namespace VideoProcessing
             double? audioOffset,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
             int outFps = PcFps;
             int g = Math.Max(1, outFps * Math.Max(1, PcKeyintSeconds));
@@ -541,10 +557,10 @@ namespace VideoProcessing
             args.Append(GetPcVideoEncoderArgs(forceCpu: true) + " ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "Video 60FPS"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTok120Async(
@@ -557,7 +573,10 @@ namespace VideoProcessing
             int outputFps,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
             int outFps = Math.Max(1, outputFps);
             int g = Math.Max(1, outFps * Math.Max(1, TikTokKeyintSeconds));
@@ -579,10 +598,10 @@ namespace VideoProcessing
             args.Append($"-r {outFps} -vsync cfr ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "TikTok encode"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTokWithFallbackAsync(
@@ -595,9 +614,12 @@ namespace VideoProcessing
             int outputFps,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
-            var result = await EncodeTikTok120Async(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct).ConfigureAwait(false);
+            var result = await EncodeTikTok120Async(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
             if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
                 return result;
 
@@ -612,7 +634,7 @@ namespace VideoProcessing
                 return result;
 
             cb?.Invoke("WARNING: Hardware encoder failed for TikTok30FPS. Falling back to CPU encoder.");
-            return await EncodeTikTokCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct).ConfigureAwait(false);
+            return await EncodeTikTokCpuAsync(outputPath, framesDir, pattern, rifeFps, originalVideoPath, audioOffset, outputFps, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTokCpuAsync(
@@ -625,7 +647,10 @@ namespace VideoProcessing
             int outputFps,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
             int outFps = Math.Max(1, outputFps);
             int g = Math.Max(1, outFps * Math.Max(1, TikTokKeyintSeconds));
@@ -644,10 +669,10 @@ namespace VideoProcessing
             args.Append($"-r {outFps} -vsync cfr ");
             args.Append($"-g {g} -keyint_min {g} -sc_threshold 0 ");
             args.Append($"{AudioArgs} ");
-            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "TikTok encode"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> RetimeCopyAsync(
@@ -656,16 +681,19 @@ namespace VideoProcessing
             double inputTimestampScale,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
             var args = new StringBuilder();
             args.Append("-y -nostdin ");
             args.Append($"-itsscale {inputTimestampScale.ToString(CultureInfo.InvariantCulture)} ");
             args.Append($"-i {QuotePath(inputPath)} ");
-            args.Append("-c:v copy -c:a copy -map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning ");
+            args.Append("-c:v copy -c:a copy -map_metadata -1 -map_chapters -1 -movflags +faststart -loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "Finalizing TikTok"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> ApplyFinalTimeScaleAsync(
@@ -674,9 +702,12 @@ namespace VideoProcessing
             double timeScale,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
         {
-            return await RetimeCopyAsync(inputPath, outputPath, timeScale, showCmd, cb, ct).ConfigureAwait(false);
+            return await RetimeCopyAsync(inputPath, outputPath, timeScale, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
         }
 
         private void LogInternal(string message, bool isError = false)
@@ -952,6 +983,128 @@ namespace VideoProcessing
             }
         }
 
+        private static Action<string>? CreateTimedProgressCallback(
+            Action<string>? inner,
+            int progressStart,
+            int progressEnd,
+            double? durationSeconds,
+            string label)
+        {
+            if (inner == null)
+                return null;
+
+            int lastProgress = -1;
+            int lastSecond = -1;
+            return msg =>
+            {
+                inner(msg);
+                if (!durationSeconds.HasValue || durationSeconds.Value <= 0)
+                    return;
+
+                if (!TryParseFfmpegOutTimeSeconds(msg, out double seconds))
+                    return;
+
+                double ratio = Math.Clamp(seconds / durationSeconds.Value, 0.0, 1.0);
+                int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
+                progress = Math.Clamp(progress, progressStart, progressEnd);
+                int wholeSecond = (int)Math.Floor(seconds);
+
+                if (progress != lastProgress)
+                {
+                    inner($"PROGRESS:{progress}%");
+                    lastProgress = progress;
+                }
+
+                if (wholeSecond != lastSecond)
+                {
+                    inner($"{label}: {FormatSeconds(seconds)}/{FormatSeconds(durationSeconds.Value)}");
+                    lastSecond = wholeSecond;
+                }
+            };
+        }
+
+        private static Action<string>? CreateFrameProgressCallback(
+            Action<string>? inner,
+            int progressStart,
+            int progressEnd,
+            int expectedFrames,
+            string label)
+        {
+            if (inner == null)
+                return null;
+
+            int lastProgress = -1;
+            int lastFrame = -1;
+            return msg =>
+            {
+                inner(msg);
+                if (expectedFrames <= 0 || !TryParseFfmpegFrame(msg, out int frame))
+                    return;
+
+                double ratio = Math.Clamp((double)frame / expectedFrames, 0.0, 1.0);
+                int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
+                progress = Math.Clamp(progress, progressStart, progressEnd);
+
+                if (progress != lastProgress)
+                {
+                    inner($"PROGRESS:{progress}%");
+                    lastProgress = progress;
+                }
+
+                if (frame != lastFrame && (frame == 0 || frame % 10 == 0 || frame >= expectedFrames))
+                {
+                    inner($"{label}: {Math.Min(frame, expectedFrames)}/{expectedFrames} frames");
+                    lastFrame = frame;
+                }
+            };
+        }
+
+        private static bool TryParseFfmpegFrame(string msg, out int frame)
+        {
+            frame = 0;
+            if (!msg.StartsWith("frame=", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string raw = msg.Substring("frame=".Length).Trim();
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out frame);
+        }
+
+        private static bool TryParseFfmpegOutTimeSeconds(string msg, out double seconds)
+        {
+            seconds = 0;
+            if (msg.StartsWith("out_time_ms=", StringComparison.OrdinalIgnoreCase) ||
+                msg.StartsWith("out_time_us=", StringComparison.OrdinalIgnoreCase))
+            {
+                int idx = msg.IndexOf('=');
+                if (idx >= 0 && long.TryParse(msg[(idx + 1)..].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long microseconds))
+                {
+                    seconds = microseconds / 1_000_000.0;
+                    return true;
+                }
+            }
+
+            if (msg.StartsWith("out_time=", StringComparison.OrdinalIgnoreCase))
+            {
+                string raw = msg.Substring("out_time=".Length).Trim();
+                if (TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out TimeSpan time))
+                {
+                    seconds = time.TotalSeconds;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string FormatSeconds(double seconds)
+        {
+            seconds = Math.Max(0, seconds);
+            TimeSpan time = TimeSpan.FromSeconds(seconds);
+            return time.TotalHours >= 1
+                ? time.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
+                : time.ToString(@"m\:ss", CultureInfo.InvariantCulture);
+        }
+
         private async Task<(double? Fps, ProcessExecutionResult Result)> GetOriginalVideoFpsAsync(
             string videoPath, Action<string>? cb, CancellationToken ct)
         {
@@ -977,6 +1130,18 @@ namespace VideoProcessing
             return (null, result);
         }
 
+        private async Task<(double? DurationSeconds, ProcessExecutionResult Result)> GetVideoDurationAsync(
+            string videoPath, Action<string>? cb, CancellationToken ct)
+        {
+            string args = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {QuotePath(videoPath)}";
+            var result = await RunProcessAsync(FfprobeExecutablePath, args, false, progressCallback: cb, cancellationToken: ct).ConfigureAwait(false);
+
+            if (result.Success && double.TryParse(result.StandardOutput.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double duration) && duration > 0)
+                return (duration, result);
+
+            return (null, result);
+        }
+
         private async Task<(double? StartTime, ProcessExecutionResult Result)> GetAudioStartTimeAsync(
             string videoPath, Action<string>? cb, CancellationToken ct)
         {
@@ -994,7 +1159,16 @@ namespace VideoProcessing
         }
 
         private async Task<ProcessExecutionResult> ExtractFramesAsync(
-            string inputPath, string outputDir, string pattern, bool useNvdec, bool showCmd, Action<string>? cb, CancellationToken ct)
+            string inputPath,
+            string outputDir,
+            string pattern,
+            bool useNvdec,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct,
+            int expectedFrames,
+            int progressStart,
+            int progressEnd)
         {
             string hw = "";
             if (useNvdec && UseNvidiaAcceleration)
@@ -1008,9 +1182,10 @@ namespace VideoProcessing
             if (IntermediateFrameFormat.Equals("png", StringComparison.OrdinalIgnoreCase) && PngCompressionLevel >= 0)
                 args.Append($"-compression_level {PngCompressionLevel} ");
 
+            args.Append("-progress pipe:1 -nostats ");
             args.Append(QuotePath(Path.Combine(outputDir, pattern)));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateFrameProgressCallback(cb, progressStart, progressEnd, expectedFrames, "Extracting"), ct).ConfigureAwait(false);
         }
 
         private static bool IsHardwareDecodeFailure(ProcessExecutionResult result)
