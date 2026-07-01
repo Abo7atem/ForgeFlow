@@ -1,0 +1,4 @@
+﻿Subject Focus uses MODNet converted to ONNX from onnx-community/modnet-webnn.
+License: Apache-2.0
+Source: https://huggingface.co/onnx-community/modnet-webnn
+Original MODNet project: https://github.com/ZHKKKe/MODNet

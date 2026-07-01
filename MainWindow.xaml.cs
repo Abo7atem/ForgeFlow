@@ -36,6 +36,7 @@ namespace ForgeFlow
             ".mp4", ".mov", ".mkv", ".webm", ".avi"
         };
         private const string BundledToolsFolderName = "Tools";
+        private const string SubjectFocusModelRelativePath = "subject-focus\\modnet.onnx";
         private const string RealEsrganExeName = "realesrgan-ncnn-vulkan.exe";
         private const string RealCuganExeName = "realcugan-ncnn-vulkan.exe";
 
@@ -89,6 +90,8 @@ namespace ForgeFlow
             SelectComboItemByTag(HardwareComboBox, string.IsNullOrWhiteSpace(_settings.HardwareAccelerationMode) ? "cpu" : _settings.HardwareAccelerationMode);
             SelectComboItemByTag(MotionComboBox, _settings.EnableRife ? "on" : "off");
             SelectComboItemByTag(ProcessingOrderComboBox, string.IsNullOrWhiteSpace(_settings.ProcessingOrder) ? "rife-then-upscale" : _settings.ProcessingOrder);
+            SelectComboItemByTag(SubjectFocusComboBox, string.IsNullOrWhiteSpace(_settings.SubjectFocusMode) ? "off" : _settings.SubjectFocusMode);
+            SubjectFocusStrengthSlider.Value = Math.Clamp(_settings.SubjectFocusStrength, 0, 100);
             LoadUpscaleProfiles();
             ToolsStatusTextBlock.Text = "Running startup checks...";
             ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
@@ -98,6 +101,7 @@ namespace ForgeFlow
             EstimateTextBlock.Foreground = Brushes.Gray;
             RefreshPresetInsight();
             RefreshUpscaleInsight();
+            RefreshSubjectFocusInsight();
             RefreshOutputPreview();
             _uiInitialized = true;
             ApplyPlanRestrictionsToUi(showMessage: false);
@@ -291,6 +295,7 @@ namespace ForgeFlow
                 ApplySelectedHardwareMode(interpolator);
                 ApplySelectedMotion(interpolator);
                 ApplySelectedUpscaleProfile(interpolator);
+                ApplySelectedSubjectFocus(interpolator);
 
                 AppendLog("Started");
                 AppendLog("Input: " + Path.GetFileName(input));
@@ -299,6 +304,7 @@ namespace ForgeFlow
                 AppendLog("Motion: " + GetSelectedMotionDisplayName());
                 AppendLog("Pipeline: " + GetSelectedProcessingOrderDisplayName());
                 AppendLog("Quality boost: " + GetSelectedUpscaleProfile().DisplayName);
+                AppendLog($"Subject focus: {GetSelectedSubjectFocusDisplayName()} ({GetSelectedSubjectFocusStrengthPercent()}%)");
                 if (!AdvanceLicenseCheckpoint(guardSession, "processing-started")) return;
 
                 var res = await interpolator.InterpolateVideoAsync(
@@ -517,10 +523,41 @@ namespace ForgeFlow
                 return;
 
             RefreshUpscaleInsight();
+            RefreshSubjectFocusInsight();
             if (_settings == null)
                 return;
 
             _settings.ProcessingOrder = GetSelectedProcessingOrder();
+            _settings.Save();
+        }
+
+        private void SubjectFocusComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            RefreshSubjectFocusInsight();
+            RefreshOutputPreview();
+            if (_settings == null)
+                return;
+
+            _settings.SubjectFocusMode = GetSelectedSubjectFocusTag();
+            _settings.Save();
+        }
+
+        private void SubjectFocusStrengthSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (SubjectFocusStrengthTextBlock == null)
+                return;
+
+            int strength = GetSelectedSubjectFocusStrengthPercent();
+            SubjectFocusStrengthTextBlock.Text = strength + "%";
+            RefreshSubjectFocusInsight();
+
+            if (!_uiInitialized || _settings == null)
+                return;
+
+            _settings.SubjectFocusStrength = strength;
             _settings.Save();
         }
 
@@ -821,6 +858,15 @@ namespace ForgeFlow
             interpolator.ProcessUpscaleBeforeRife = string.Equals(GetSelectedProcessingOrder(), "upscale-then-rife", StringComparison.OrdinalIgnoreCase);
         }
 
+        private void ApplySelectedSubjectFocus(VideoInterpolator interpolator)
+        {
+            SubjectFocusMode mode = GetSelectedSubjectFocusMode();
+            interpolator.SubjectFocusMode = mode;
+            interpolator.EnableSubjectFocus = mode != SubjectFocusMode.Off;
+            interpolator.SubjectFocusStrength = GetSelectedSubjectFocusStrengthPercent() / 100.0;
+            interpolator.SubjectFocusModelPath = Path.Combine(GetBundledToolsDirectory(), SubjectFocusModelRelativePath);
+        }
+
         private void ApplySelectedHardwareMode(VideoInterpolator interpolator)
         {
             string mode = GetEffectiveHardwareMode();
@@ -865,6 +911,7 @@ namespace ForgeFlow
             MotionTitleTextBlock.Text = "Motion";
             QualityBoostTitleTextBlock.Text = "Quality Boost";
             PipelineOrderTitleTextBlock.Text = "Pipeline Order";
+            SubjectFocusTitleTextBlock.Text = "Subject Focus";
             HardwareHintTextBlock.Text = "All modes are available during the 3-attempt trial.\nكل المودات متاحة خلال التجربة ذات 3 محاولات.";
             QualityBoostHintTextBlock.Text = "";
             PipelineHintTextBlock.Text = "";
@@ -883,6 +930,12 @@ namespace ForgeFlow
                 item.Content = profile.DisplayName;
                 item.ToolTip = profile.Insight;
             }
+
+            SetComboItemContent(SubjectFocusComboBox, "off", "Off", "No foreground matting.");
+            SetComboItemContent(SubjectFocusComboBox, "protect", "Protect Edges", "Use a person mask to keep subject edges cleaner.");
+            SetComboItemContent(SubjectFocusComboBox, "enhance", "Enhance Subject", "Sharpen the foreground subject while keeping the background softer.");
+            SetComboItemContent(SubjectFocusComboBox, "soften-bg", "Soften Background", "Gently blur the background behind the subject.");
+            RefreshSubjectFocusInsight();
         }
 
         private static void SetComboItemContent(ComboBox comboBox, string tag, string content, string toolTip)
@@ -942,6 +995,26 @@ namespace ForgeFlow
             RefreshProcessingOrderState();
         }
 
+        private void RefreshSubjectFocusInsight()
+        {
+            if (SubjectFocusStrengthSlider == null || SubjectFocusStrengthTextBlock == null)
+                return;
+
+            bool enabled = GetSelectedSubjectFocusMode() != SubjectFocusMode.Off;
+            SubjectFocusStrengthSlider.IsEnabled = enabled;
+            SubjectFocusStrengthTextBlock.Opacity = enabled ? 1.0 : 0.35;
+            SubjectFocusStrengthSlider.Opacity = enabled ? 1.0 : 0.35;
+            int strength = GetSelectedSubjectFocusStrengthPercent();
+            SubjectFocusStrengthTextBlock.Text = strength + "%";
+            SubjectFocusHintTextBlock.Text = GetSelectedSubjectFocusMode() switch
+            {
+                SubjectFocusMode.ProtectEdges => $"Beta: edge protection strength {strength}%.\nبيتا: قوة حماية الحواف {strength}%.",
+                SubjectFocusMode.EnhanceSubject => $"Beta: subject clarity strength {strength}%.\nبيتا: قوة توضيح الشخص {strength}%.",
+                SubjectFocusMode.SoftenBackground => $"Beta: background softness strength {strength}%.\nبيتا: قوة تنعيم الخلفية {strength}%.",
+                _ => ""
+            };
+        }
+
         private void RefreshProcessingOrderState()
         {
             ProcessingOrderComboBox.IsEnabled = true;
@@ -975,6 +1048,38 @@ namespace ForgeFlow
         private string GetSelectedProcessingOrder()
         {
             return (ProcessingOrderComboBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "rife-then-upscale";
+        }
+
+        private string GetSelectedSubjectFocusTag()
+        {
+            return (SubjectFocusComboBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "off";
+        }
+
+        private SubjectFocusMode GetSelectedSubjectFocusMode()
+        {
+            return GetSelectedSubjectFocusTag() switch
+            {
+                "protect" => SubjectFocusMode.ProtectEdges,
+                "enhance" => SubjectFocusMode.EnhanceSubject,
+                "soften-bg" => SubjectFocusMode.SoftenBackground,
+                _ => SubjectFocusMode.Off
+            };
+        }
+
+        private int GetSelectedSubjectFocusStrengthPercent()
+        {
+            return (int)Math.Round(Math.Clamp(SubjectFocusStrengthSlider?.Value ?? 70, 0, 100));
+        }
+
+        private string GetSelectedSubjectFocusDisplayName()
+        {
+            return GetSelectedSubjectFocusMode() switch
+            {
+                SubjectFocusMode.ProtectEdges => "Protect Edges",
+                SubjectFocusMode.EnhanceSubject => "Enhance Subject",
+                SubjectFocusMode.SoftenBackground => "Soften Background",
+                _ => "Off"
+            };
         }
 
         private string GetSelectedProcessingOrderDisplayName()

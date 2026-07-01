@@ -17,6 +17,8 @@ namespace ForgeFlow
         public string SelectedUpscaleProfileId { get; set; } = "off";
         public bool EnableRife { get; set; } = true;
         public string ProcessingOrder { get; set; } = "rife-then-upscale";
+        public string SubjectFocusMode { get; set; } = "off";
+        public int SubjectFocusStrength { get; set; } = 70;
         public string HardwareAccelerationMode { get; set; } = "cpu";
         public bool HasSeenWelcomeScreen { get; set; }
 

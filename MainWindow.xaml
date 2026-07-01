@@ -619,7 +619,7 @@
                                    Width="190"
                                    Margin="0,4,0,0"/>
                     </StackPanel>
-                    <StackPanel>
+                    <StackPanel Margin="0,0,10,0">
                         <DockPanel LastChildFill="False"
                                    Margin="0,0,0,3">
                             <TextBlock x:Name="PipelineOrderTitleTextBlock"
@@ -642,6 +642,53 @@
                                    FontSize="10"
                                    TextWrapping="Wrap"
                                    Width="185"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock x:Name="SubjectFocusTitleTextBlock"
+                                   Text="Subject Focus"
+                                   HorizontalAlignment="Left"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="SubjectFocusComboBox"
+                                  Width="165"
+                                  Height="30"
+                                  FontSize="11"
+                                  SelectionChanged="SubjectFocusComboBox_SelectionChanged">
+                            <ComboBoxItem Content="Off" Tag="off"/>
+                            <ComboBoxItem Content="Protect Edges" Tag="protect"/>
+                            <ComboBoxItem Content="Enhance Subject" Tag="enhance"/>
+                            <ComboBoxItem Content="Soften Background" Tag="soften-bg"/>
+                        </ComboBox>
+                        <Grid Width="165"
+                              Margin="0,5,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="38"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="SubjectFocusStrengthSlider"
+                                    Grid.Column="0"
+                                    Minimum="0"
+                                    Maximum="100"
+                                    Value="70"
+                                    TickFrequency="5"
+                                    IsSnapToTickEnabled="True"
+                                    ValueChanged="SubjectFocusStrengthSlider_ValueChanged"/>
+                            <TextBlock x:Name="SubjectFocusStrengthTextBlock"
+                                       Grid.Column="1"
+                                       Text="70%"
+                                       Foreground="#8E8E93"
+                                       FontSize="10"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+                        <TextBlock x:Name="SubjectFocusHintTextBlock"
+                                   Text=""
+                                   Foreground="#6E6E73"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Width="165"
                                    Margin="0,4,0,0"/>
                     </StackPanel>
                 </WrapPanel>

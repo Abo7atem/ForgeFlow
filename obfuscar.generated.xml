@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Obfuscator>
-  <Var name="InPath" value="E:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows\" />
-  <Var name="OutPath" value="E:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows\Protected\" />
+  <Var name="InPath" value="D:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows\" />
+  <Var name="OutPath" value="D:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows\Protected\" />
   <Var name="KeepPublicApi" value="true" />
   <Var name="HidePrivateApi" value="true" />
   <Var name="RenameFields" value="true" />
@@ -10,8 +10,8 @@
   <Var name="RenameEvents" value="true" />
   <Var name="UseUnicodeNames" value="true" />
   <Var name="HideStrings" value="true" />
-  <AssemblySearchPath path="E:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows" />
-  <AssemblySearchPath path="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\8.0.26\ref\net8.0" />
-  <AssemblySearchPath path="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\8.0.26\ref\net8.0" />
+  <AssemblySearchPath path="D:\ForgeFlow\ForgeFlow\bin\Release\net8.0-windows" />
+  <AssemblySearchPath path="C:\Users\Hatem\.nuget\packages\microsoft.windowsdesktop.app.ref\8.0.28\ref\net8.0" />
+  <AssemblySearchPath path="C:\Users\Hatem\.nuget\packages\microsoft.netcore.app.ref\8.0.28\ref\net8.0" />
   <Module file="$(InPath)ForgeFlow.dll" />
 </Obfuscator>

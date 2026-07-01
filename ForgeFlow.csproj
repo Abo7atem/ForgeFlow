@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.46</Version>
-    <FileVersion>1.0.46.0</FileVersion>
-    <AssemblyVersion>1.0.46.0</AssemblyVersion>
+    <Version>1.0.48</Version>
+    <FileVersion>1.0.48.0</FileVersion>
+    <AssemblyVersion>1.0.48.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -37,6 +37,11 @@
     <None Include="version.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.27.0" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
   </ItemGroup>
 
 </Project>

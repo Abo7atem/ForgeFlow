@@ -120,6 +120,12 @@ namespace VideoProcessing
         public string UpscaleEngine { get; set; } = "none";
         public int UpscaleScale { get; set; } = 1;
 
+        // Optional foreground/person separation.
+        public bool EnableSubjectFocus { get; set; } = false;
+        public SubjectFocusMode SubjectFocusMode { get; set; } = SubjectFocusMode.Off;
+        public double SubjectFocusStrength { get; set; } = 0.70;
+        public string SubjectFocusModelPath { get; set; } = "";
+
         // Audio
         public string AudioArgs { get; set; } = "-c:a aac -b:a 192k";
 
@@ -194,6 +200,7 @@ namespace VideoProcessing
                 int totalStages = 1;
                 if (EnableRifeInterpolation) totalStages++;
                 if (EnableUpscale) totalStages++;
+                if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off) totalStages++;
                 if (GeneratePc60) totalStages++;
                 if (GenerateTikTok30) totalStages += 2;
 
@@ -275,6 +282,17 @@ namespace VideoProcessing
                     if (string.IsNullOrWhiteSpace(workingFramePattern))
                         workingFramePattern = framePattern;
                     progressCallback?.Invoke("PROGRESS:82%");
+                }
+
+                if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off)
+                {
+                    stageNumber++;
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Subject Focus");
+                    string subjectFocusDir = Path.Combine(_tempSessionDirectory, "subject_focus_frames");
+                    var subjectFocusRes = await ApplySubjectFocusAsync(workingFramesDir, subjectFocusDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    if (!subjectFocusRes.Success) return subjectFocusRes;
+                    workingFramesDir = subjectFocusDir;
+                    progressCallback?.Invoke("PROGRESS:86%");
                 }
 
                 string encodeFramesDir = workingFramesDir;
@@ -690,7 +708,64 @@ namespace VideoProcessing
                     return "Upscale model files are missing.";
             }
 
+            if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off)
+            {
+                if (string.IsNullOrWhiteSpace(SubjectFocusModelPath) || !File.Exists(SubjectFocusModelPath))
+                    return "Subject Focus model not found.";
+            }
+
             return null;
+        }
+
+        private async Task<ProcessExecutionResult> ApplySubjectFocusAsync(
+            string inputFramesDir,
+            string outputFramesDir,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct)
+        {
+            try
+            {
+                Directory.CreateDirectory(outputFramesDir);
+                string extension = IntermediateFrameFormat.ToLowerInvariant();
+                string[] frames = Directory.GetFiles(inputFramesDir, $"*.{extension}")
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (frames.Length == 0)
+                    return new ProcessExecutionResult(-1, "", "Subject Focus found no frames to process.");
+
+                cb?.Invoke($"Subject Focus mode: {SubjectFocusMode} ({SubjectFocusStrength:P0})");
+                cb?.Invoke($"Subject Focus frames: {frames.Length}");
+
+                await Task.Run(() =>
+                {
+                    using var processor = new SubjectFocusProcessor(SubjectFocusModelPath);
+                    for (int i = 0; i < frames.Length; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        string output = Path.Combine(outputFramesDir, Path.GetFileName(frames[i]));
+                        processor.ProcessFrame(frames[i], output, SubjectFocusMode, SubjectFocusStrength);
+
+                        if (i == 0 || (i + 1) % 10 == 0 || i + 1 == frames.Length)
+                        {
+                            int progress = 82 + (int)(Math.Min(1.0, (double)(i + 1) / frames.Length) * 4);
+                            cb?.Invoke($"PROGRESS:{progress}%");
+                            cb?.Invoke($"Subject Focus: {i + 1}/{frames.Length}");
+                        }
+                    }
+                }, ct).ConfigureAwait(false);
+
+                return new ProcessExecutionResult(0, "", "");
+            }
+            catch (OperationCanceledException)
+            {
+                return new ProcessExecutionResult(-1, "", "Subject Focus canceled.");
+            }
+            catch (Exception ex)
+            {
+                return new ProcessExecutionResult(-1, "", "Subject Focus failed: " + ex.Message);
+            }
         }
 
         private async Task<ProcessExecutionResult> UpscaleFramesAsync(
