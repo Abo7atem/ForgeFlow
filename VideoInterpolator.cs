@@ -209,6 +209,12 @@ namespace VideoProcessing
                 progressCallback?.Invoke("PROGRESS:0%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
                 var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                if (!extract.Success && useNvdecForDecoding && IsHardwareDecodeFailure(extract))
+                {
+                    progressCallback?.Invoke("NVDEC decode failed; retrying frame extraction with CPU decode.");
+                    ClearFrameDirectory(inputFramesDir);
+                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                }
                 if (!extract.Success) return extract;
 
                 string workingFramesDir = inputFramesDir;
@@ -943,6 +949,28 @@ namespace VideoProcessing
             args.Append(QuotePath(Path.Combine(outputDir, pattern)));
 
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, cb, ct).ConfigureAwait(false);
+        }
+
+        private static bool IsHardwareDecodeFailure(ProcessExecutionResult result)
+        {
+            string text = (result.StandardError + "\n" + result.StandardOutput).ToLowerInvariant();
+            return text.Contains("cuda_error", StringComparison.OrdinalIgnoreCase)
+                   || text.Contains("cuvid", StringComparison.OrdinalIgnoreCase)
+                   || text.Contains("nvdec", StringComparison.OrdinalIgnoreCase)
+                   || text.Contains("device setup failed", StringComparison.OrdinalIgnoreCase)
+                   || text.Contains("hardware accelerator failed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ClearFrameDirectory(string directory)
+        {
+            if (!Directory.Exists(directory))
+                return;
+
+            foreach (string file in Directory.EnumerateFiles(directory))
+            {
+                try { File.Delete(file); }
+                catch { }
+            }
         }
 
         private async Task<ProcessExecutionResult> RunRifeInterpolationAsync(
