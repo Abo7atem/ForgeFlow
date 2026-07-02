@@ -211,18 +211,19 @@ namespace VideoProcessing
                 if (GenerateTikTok30) totalStages += 2;
 
                 int stageNumber = 1;
+                var stageRange = GetStageProgressRange(stageNumber, totalStages);
                 progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Extracting frames");
-                progressCallback?.Invoke("PROGRESS:0%");
+                progressCallback?.Invoke($"PROGRESS:{stageRange.Start}%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
-                var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, 0, 20).ConfigureAwait(false);
+                var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, stageRange.Start, stageRange.End).ConfigureAwait(false);
                 if (!extract.Success && useNvdecForDecoding && IsHardwareDecodeFailure(extract))
                 {
                     progressCallback?.Invoke("NVDEC decode failed; retrying frame extraction with CPU decode.");
                     ClearFrameDirectory(inputFramesDir);
-                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, 0, 20).ConfigureAwait(false);
+                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, stageRange.Start, stageRange.End).ConfigureAwait(false);
                 }
                 if (!extract.Success) return extract;
-                progressCallback?.Invoke("PROGRESS:20%");
+                progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
 
                 string workingFramesDir = inputFramesDir;
                 string workingFramePattern = framePattern;
@@ -230,21 +231,23 @@ namespace VideoProcessing
                 if (EnableUpscale && ProcessUpscaleBeforeRife)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
                     string upscaledBeforeDir = Path.Combine(_tempSessionDirectory, "upscaled_before_rife");
-                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledBeforeDir, showConsoleWindows, progressCallback, cancellationToken, 20, 35).ConfigureAwait(false);
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledBeforeDir, showConsoleWindows, progressCallback, cancellationToken, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!upscaleRes.Success) return upscaleRes;
                     workingFramesDir = upscaledBeforeDir;
                     workingFramePattern = framePattern;
-                    progressCallback?.Invoke("PROGRESS:35%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
                 if (EnableRifeInterpolation)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} RIFE interpolation");
-                    progressCallback?.Invoke("PROGRESS:20%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.Start}%");
 
                     string rifeFramesDir = Path.Combine(_tempSessionDirectory, ProcessUpscaleBeforeRife ? "rife_after_upscale" : "rife_output_frames");
                     Directory.CreateDirectory(rifeFramesDir);
@@ -262,8 +265,9 @@ namespace VideoProcessing
                                 int done = Directory.GetFiles(rifeFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
                                 if (pollExpected > 0)
                                 {
-                                    int progress = 20 + (int)(Math.Min(1.0, (double)done / pollExpected) * 50);
+                                    int progress = stageRange.Start + (int)Math.Round(Math.Min(1.0, (double)done / pollExpected) * (stageRange.End - stageRange.Start));
                                     progressCallback?.Invoke($"PROGRESS:{progress}%");
+                                    progressCallback?.Invoke($"RIFE: {Math.Min(done, pollExpected)}/{pollExpected} frames");
                                 }
                             }
                         }
@@ -278,7 +282,7 @@ namespace VideoProcessing
                     int inputFrameCount = Directory.GetFiles(workingFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
                     int outputFrameCount = Directory.GetFiles(rifeFramesDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
                     progressCallback?.Invoke($"RIFE frames: input={inputFrameCount}, output={outputFrameCount}");
-                    progressCallback?.Invoke("PROGRESS:70%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                     workingFramesDir = rifeFramesDir;
                     workingFramePattern = $"%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
                 }
@@ -286,26 +290,28 @@ namespace VideoProcessing
                 if (EnableUpscale && !ProcessUpscaleBeforeRife)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     string upscaleLabel = string.IsNullOrWhiteSpace(UpscaleDisplayName) ? UpscaleModelName : UpscaleDisplayName;
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Boosting resolution ({upscaleLabel})");
                     string upscaledAfterDir = Path.Combine(_tempSessionDirectory, "upscaled_after_rife");
-                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledAfterDir, showConsoleWindows, progressCallback, cancellationToken, 70, 82).ConfigureAwait(false);
+                    var upscaleRes = await UpscaleFramesAsync(workingFramesDir, upscaledAfterDir, showConsoleWindows, progressCallback, cancellationToken, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!upscaleRes.Success) return upscaleRes;
                     workingFramesDir = upscaledAfterDir;
                     if (string.IsNullOrWhiteSpace(workingFramePattern))
                         workingFramePattern = framePattern;
-                    progressCallback?.Invoke("PROGRESS:82%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
                 if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Subject Focus");
                     string subjectFocusDir = Path.Combine(_tempSessionDirectory, "subject_focus_frames");
-                    var subjectFocusRes = await ApplySubjectFocusAsync(workingFramesDir, subjectFocusDir, showConsoleWindows, progressCallback, cancellationToken).ConfigureAwait(false);
+                    var subjectFocusRes = await ApplySubjectFocusAsync(workingFramesDir, subjectFocusDir, showConsoleWindows, progressCallback, cancellationToken, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!subjectFocusRes.Success) return subjectFocusRes;
                     workingFramesDir = subjectFocusDir;
-                    progressCallback?.Invoke("PROGRESS:86%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
                 string encodeFramesDir = workingFramesDir;
@@ -328,33 +334,37 @@ namespace VideoProcessing
                 if (GeneratePc60)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding Video 60FPS");
                     var pcRes = await EncodePcWithFallbackAsync(pcOut, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
-                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 86, 90).ConfigureAwait(false);
+                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!pcRes.Success) return pcRes;
-                    progressCallback?.Invoke("PROGRESS:90%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
                 if (GenerateTikTok30)
                 {
                     stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Preparing TikTok30FPS");
                     var ttRes = await EncodeTikTokWithFallbackAsync(tt120Temp, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
                         tikTokEncodeFps,
-                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 90, 95).ConfigureAwait(false);
+                        showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!ttRes.Success) return ttRes;
-                    progressCallback?.Invoke("PROGRESS:95%");
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
 
                     if (EnableRifeInterpolation)
                     {
                         stageNumber++;
+                        stageRange = GetStageProgressRange(stageNumber, totalStages);
                         progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Finalizing TikTok30FPS");
                         var (tempFps, tempFpsResult) = await GetOriginalVideoFpsAsync(tt120Temp, progressCallback, cancellationToken).ConfigureAwait(false);
                         if (tempFps == null || tempFps.Value <= 0)
                             return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine temporary TikTok FPS: " + tempFpsResult.StandardError);
 
                         double scaleToTargetFps = tempFps.Value / TikTokTargetFps;
-                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 95, 98)
+                        int retimeEnd = stageRange.Start + Math.Max(1, (stageRange.End - stageRange.Start) / 2);
+                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, retimeEnd)
                             .ConfigureAwait(false);
                         if (!retimeRes.Success) return retimeRes;
                     }
@@ -364,7 +374,10 @@ namespace VideoProcessing
                     }
 
                     progressCallback?.Invoke($"Applying TikTok final timing pass (itsscale {FinalOutputTimeScale:0.###})");
-                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, 98, 100).ConfigureAwait(false);
+                    int finalStart = EnableRifeInterpolation
+                        ? stageRange.Start + Math.Max(1, (stageRange.End - stageRange.Start) / 2)
+                        : stageRange.End;
+                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, finalStart, 100).ConfigureAwait(false);
                     if (!tikTokFinalRes.Success) return tikTokFinalRes;
 
                     progressCallback?.Invoke("PROGRESS:100%");
@@ -398,6 +411,15 @@ namespace VideoProcessing
                 return TikTokRateControl.Trim();
 
             return $"-crf {TikTokCrf} -maxrate {TikTokMaxRate} -bufsize {TikTokBufSize}";
+        }
+
+        private static (int Start, int End) GetStageProgressRange(int stageNumber, int totalStages)
+        {
+            totalStages = Math.Max(1, totalStages);
+            stageNumber = Math.Clamp(stageNumber, 1, totalStages);
+            int start = (int)Math.Round(((stageNumber - 1) * 100.0) / totalStages);
+            int end = (int)Math.Round((stageNumber * 100.0) / totalStages);
+            return (Math.Clamp(start, 0, 100), Math.Clamp(Math.Max(start + 1, end), 0, 100));
         }
 
         private string FilterGraphMild()
@@ -759,7 +781,9 @@ namespace VideoProcessing
             string outputFramesDir,
             bool showCmd,
             Action<string>? cb,
-            CancellationToken ct)
+            CancellationToken ct,
+            int progressStart,
+            int progressEnd)
         {
             try
             {
@@ -786,7 +810,8 @@ namespace VideoProcessing
 
                         if (i == 0 || (i + 1) % 10 == 0 || i + 1 == frames.Length)
                         {
-                            int progress = 82 + (int)(Math.Min(1.0, (double)(i + 1) / frames.Length) * 4);
+                            int progress = progressStart + (int)Math.Round(Math.Min(1.0, (double)(i + 1) / frames.Length) * (progressEnd - progressStart));
+                            progress = Math.Clamp(progress, progressStart, progressEnd);
                             cb?.Invoke($"PROGRESS:{progress}%");
                             cb?.Invoke($"Subject Focus: {i + 1}/{frames.Length}");
                         }
