@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.53</Version>
-    <FileVersion>1.0.53.0</FileVersion>
-    <AssemblyVersion>1.0.53.0</AssemblyVersion>
+    <Version>1.0.54</Version>
+    <FileVersion>1.0.54.0</FileVersion>
+    <AssemblyVersion>1.0.54.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -30,6 +30,7 @@
     <Resource Include="Assets\ForgeFlow.png" />
     <Resource Include="Assets\ForgeFlowMark.png" />
     <Resource Include="Assets\Emoji\*.png" />
+    <Content Include="Assets\ForgeFlow.ico" Link="ForgeFlow.ico" CopyToOutputDirectory="Always" />
     <None Update="Tools\**\*">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

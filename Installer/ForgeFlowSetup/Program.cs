@@ -788,9 +788,10 @@ internal static class Program
 
             object shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath })!;
             Type shortcutType = shortcut.GetType();
+            string iconPath = Path.Combine(workingDirectory, "ForgeFlow.ico");
             shortcutType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { exePath });
             shortcutType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { workingDirectory });
-            shortcutType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { exePath + ",0" });
+            shortcutType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { File.Exists(iconPath) ? iconPath : exePath + ",0" });
             shortcutType.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut, new object[] { AppName });
             shortcutType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
 

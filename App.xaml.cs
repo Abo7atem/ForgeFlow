@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -9,6 +11,9 @@ namespace ForgeFlow
 {
     public partial class App : Application
     {
+        private const int SW_RESTORE = 9;
+        private const int SW_SHOW = 5;
+
         private Mutex? _singleInstanceMutex;
 
         protected override void OnStartup(StartupEventArgs e)
@@ -20,11 +25,15 @@ namespace ForgeFlow
             _singleInstanceMutex = new Mutex(true, @"Local\ForgeFlowLiteSingleInstance", out bool createdNew);
             if (!createdNew)
             {
-                MessageBox.Show(
-                    "ForgeFlow يعمل بالفعل. أغلق النافذة المفتوحة أولاً.",
-                    "ForgeFlow",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                if (!TryActivateExistingInstance())
+                {
+                    MessageBox.Show(
+                        "ForgeFlow يعمل بالفعل. تم تشغيل النسخة المفتوحة حالياً.",
+                        "ForgeFlow",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+
                 Shutdown();
                 return;
             }
@@ -44,6 +53,72 @@ namespace ForgeFlow
             }
 
             base.OnExit(e);
+        }
+
+        private static bool TryActivateExistingInstance()
+        {
+            try
+            {
+                int currentId = Environment.ProcessId;
+                string? currentPath = Environment.ProcessPath;
+
+                foreach (Process process in Process.GetProcessesByName("ForgeFlow"))
+                {
+                    using (process)
+                    {
+                        if (process.Id == currentId)
+                            continue;
+
+                        string? processPath = null;
+                        try { processPath = process.MainModule?.FileName; } catch { }
+
+                        if (!string.IsNullOrWhiteSpace(currentPath) &&
+                            !string.IsNullOrWhiteSpace(processPath) &&
+                            !string.Equals(currentPath, processPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        nint handle = WaitForMainWindow(process);
+                        if (handle == nint.Zero)
+                            continue;
+
+                        if (IsIconic(handle))
+                            ShowWindowAsync(handle, SW_RESTORE);
+                        else
+                            ShowWindowAsync(handle, SW_SHOW);
+
+                        SetForegroundWindow(handle);
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private static nint WaitForMainWindow(Process process)
+        {
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                try
+                {
+                    process.Refresh();
+                    if (process.MainWindowHandle != nint.Zero)
+                        return process.MainWindowHandle;
+                }
+                catch
+                {
+                    return nint.Zero;
+                }
+
+                Thread.Sleep(100);
+            }
+
+            return nint.Zero;
         }
 
         private static void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -92,5 +167,14 @@ namespace ForgeFlow
             {
             }
         }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(nint hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(nint hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(nint hWnd);
     }
 }
