@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.54</Version>
-    <FileVersion>1.0.54.0</FileVersion>
-    <AssemblyVersion>1.0.54.0</AssemblyVersion>
+    <Version>1.0.55</Version>
+    <FileVersion>1.0.55.0</FileVersion>
+    <AssemblyVersion>1.0.55.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -30,7 +30,6 @@
     <Resource Include="Assets\ForgeFlow.png" />
     <Resource Include="Assets\ForgeFlowMark.png" />
     <Resource Include="Assets\Emoji\*.png" />
-    <Content Include="Assets\ForgeFlow.ico" Link="ForgeFlow.ico" CopyToOutputDirectory="Always" />
     <None Update="Tools\**\*">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
@@ -44,5 +43,10 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.27.0" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
   </ItemGroup>
+
+  <Target Name="CopyShortcutIcon" AfterTargets="Build;Publish">
+    <Copy SourceFiles="Assets\ForgeFlow.ico" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="Assets\ForgeFlow.ico" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
+  </Target>
 
 </Project>

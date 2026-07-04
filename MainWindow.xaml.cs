@@ -2453,7 +2453,7 @@ namespace ForgeFlow
 
         protected override void OnClosed(EventArgs e)
         {
-            _runnerTimer.Stop();
+            _runnerTimer?.Stop();
             _videoInfoCts?.Cancel();
             _videoInfoCts?.Dispose();
             _updateChecker.Dispose();
