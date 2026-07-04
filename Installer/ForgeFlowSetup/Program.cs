@@ -12,6 +12,8 @@ internal static class Program
     private const string AppName = "ForgeFlow Lite";
     private const string Publisher = "A.Hatem T-Zone SYR";
     private const string UninstallRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\ForgeFlow Lite";
+    private const int MoveFileDelayUntilReboot = 0x00000004;
+    private const int MoveFileReplaceExisting = 0x00000001;
 
     [STAThread]
     private static void Main(string[] args)
@@ -64,7 +66,9 @@ internal static class Program
             if (!File.Exists(stagedExePath))
                 throw new FileNotFoundException("ForgeFlow.exe was not found in the installer payload.", stagedExePath);
 
-            installDir = InstallStagedPayload(tempInstallDir, installDir, progress);
+            InstalledPayloadResult installResult = InstallStagedPayload(tempInstallDir, installDir, progress);
+            installDir = installResult.InstallDir;
+            bool restartRequired = installResult.RestartRequired;
 
             string exePath = Path.Combine(installDir, "ForgeFlow.exe");
             if (!File.Exists(exePath))
@@ -91,9 +95,9 @@ internal static class Program
             CleanupLegacyInstalledApps();
             RegisterInstalledApplication(installDir, exePath, uninstallScript);
 
-            progress.SetStatus("Starting ForgeFlow...");
+            progress.SetStatus(restartRequired ? "Restart required." : "Starting ForgeFlow...");
             Application.DoEvents();
-            if (launchAfterInstall)
+            if (launchAfterInstall && !restartRequired)
             {
                 Process.Start(new ProcessStartInfo
                 {
@@ -104,7 +108,19 @@ internal static class Program
             }
 
             progress.Close();
-            MessageBox.Show("ForgeFlow Lite has been installed successfully.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (restartRequired)
+            {
+                MessageBox.Show(
+                    "ForgeFlow Lite update files were prepared successfully.\n\n" +
+                    "Windows is still locking one or more old files, so they will be replaced automatically after restarting Windows.",
+                    AppName,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show("ForgeFlow Lite has been installed successfully.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
         }
         catch (Exception ex)
         {
@@ -454,7 +470,7 @@ internal static class Program
             throw new InvalidOperationException("The requested install directory is not trusted: " + fullInstallDir);
     }
 
-    private static string InstallStagedPayload(string tempInstallDir, string requestedInstallDir, InstallProgressForm progress)
+    private static InstalledPayloadResult InstallStagedPayload(string tempInstallDir, string requestedInstallDir, InstallProgressForm progress)
     {
         try
         {
@@ -463,22 +479,102 @@ internal static class Program
             CloseRunningForgeFlowProcesses(requestedInstallDir);
             CloseAllForgeFlowProcesses();
             SwapInstallDirectory(tempInstallDir, requestedInstallDir);
-            return requestedInstallDir;
+            return new InstalledPayloadResult(requestedInstallDir, RestartRequired: false);
         }
         catch (Exception ex)
         {
             LogSetupError(new InvalidOperationException(
-                "Primary install directory is locked. Setup will not create a second copy.",
+                "Primary install directory is locked. Setup will try in-place deferred replacement.",
                 ex));
 
-            progress.SetStatus("Previous install is locked.");
+            progress.SetStatus("Locked files found. Preparing safe replacement...");
             Application.DoEvents();
 
+            bool restartRequired = CopyStagedPayloadWithDeferredReplacements(tempInstallDir, requestedInstallDir);
             TryDeleteDirectory(tempInstallDir);
-            throw new IOException(
-                "Could not replace the existing ForgeFlow Lite installation because Windows is still locking one of its files. " +
-                "Setup already tried to close ForgeFlow and clean the old install. Restart Windows, then run setup again.",
-                ex);
+            return new InstalledPayloadResult(requestedInstallDir, restartRequired);
+        }
+    }
+
+    private static bool CopyStagedPayloadWithDeferredReplacements(string tempInstallDir, string installDir)
+    {
+        string fullTempDir = Path.GetFullPath(tempInstallDir);
+        string fullInstallDir = Path.GetFullPath(installDir);
+        Directory.CreateDirectory(fullInstallDir);
+
+        bool restartRequired = false;
+        string pendingRoot = Path.Combine(fullInstallDir, ".ForgeFlow_Pending_" + Guid.NewGuid().ToString("N"));
+
+        foreach (string sourcePath in Directory.EnumerateFiles(fullTempDir, "*", SearchOption.AllDirectories))
+        {
+            string relativePath = Path.GetRelativePath(fullTempDir, sourcePath);
+            string destinationPath = Path.Combine(fullInstallDir, relativePath);
+            string? destinationDir = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(destinationDir))
+                Directory.CreateDirectory(destinationDir);
+
+            if (TryCopyFileWithRetry(sourcePath, destinationPath))
+                continue;
+
+            restartRequired = true;
+            string pendingPath = Path.Combine(pendingRoot, relativePath + "." + Guid.NewGuid().ToString("N") + ".pending");
+            string? pendingDir = Path.GetDirectoryName(pendingPath);
+            if (!string.IsNullOrWhiteSpace(pendingDir))
+                Directory.CreateDirectory(pendingDir);
+
+            File.Copy(sourcePath, pendingPath, overwrite: true);
+            ScheduleMoveOnReboot(pendingPath, destinationPath);
+        }
+
+        if (restartRequired)
+            WritePendingRestartNote(fullInstallDir);
+        else
+            TryDeleteDirectory(pendingRoot);
+
+        return restartRequired;
+    }
+
+    private static bool TryCopyFileWithRetry(string sourcePath, string destinationPath)
+    {
+        const int attempts = 10;
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                File.Copy(sourcePath, destinationPath, overwrite: true);
+                return true;
+            }
+            catch when (attempt < attempts)
+            {
+                CloseAllForgeFlowProcesses();
+                Thread.Sleep(500);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ScheduleMoveOnReboot(string sourcePath, string destinationPath)
+    {
+        if (!MoveFileEx(sourcePath, destinationPath, MoveFileDelayUntilReboot | MoveFileReplaceExisting))
+            throw new IOException("Could not schedule locked file replacement: " + destinationPath);
+    }
+
+    private static void WritePendingRestartNote(string installDir)
+    {
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(installDir, "restart-required.txt"),
+                "ForgeFlow Lite prepared an update, but Windows kept one or more old files locked.\r\n" +
+                "Restart Windows to complete the replacement.\r\n");
+        }
+        catch
+        {
         }
     }
 
@@ -973,7 +1069,12 @@ internal static class Program
         {
         }
     }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, int dwFlags);
 }
+
+internal sealed record InstalledPayloadResult(string InstallDir, bool RestartRequired);
 
 internal sealed class InstallProgressForm : Form
 {
