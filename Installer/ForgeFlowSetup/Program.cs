@@ -54,6 +54,7 @@ internal static class Program
 
             ValidateInstallDirectory(installDir);
             CloseRunningForgeFlowProcesses(installDir);
+            CloseAllForgeFlowProcesses();
             CleanupLegacyInstalls(installDir);
 
             ZipFile.ExtractToDirectory(tempZip, tempInstallDir, overwriteFiles: true);
@@ -363,6 +364,25 @@ internal static class Program
         }
     }
 
+    private static void CloseAllForgeFlowProcesses()
+    {
+        foreach (Process process in Process.GetProcessesByName("ForgeFlow"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (IsForgeFlowExecutable(process.MainModule?.FileName))
+                        CloseForgeFlowProcess(process.Id, forceIfNeeded: true);
+                }
+                catch
+                {
+                    CloseForgeFlowProcess(process.Id, forceIfNeeded: true);
+                }
+            }
+        }
+    }
+
     private static void CloseForgeFlowProcess(int processId, bool forceIfNeeded)
     {
         try
@@ -379,7 +399,7 @@ internal static class Program
                 return;
 
             try { process.Kill(entireProcessTree: true); } catch { }
-            try { process.WaitForExit(8000); } catch { }
+            try { process.WaitForExit(15000); } catch { }
         }
         catch
         {
@@ -438,6 +458,10 @@ internal static class Program
     {
         try
         {
+            progress.SetStatus("Removing previous install...");
+            Application.DoEvents();
+            CloseRunningForgeFlowProcesses(requestedInstallDir);
+            CloseAllForgeFlowProcesses();
             SwapInstallDirectory(tempInstallDir, requestedInstallDir);
             return requestedInstallDir;
         }
@@ -452,8 +476,8 @@ internal static class Program
 
             TryDeleteDirectory(tempInstallDir);
             throw new IOException(
-                "Could not replace the existing ForgeFlow Lite installation because files are still in use. " +
-                "Close ForgeFlow from Task Manager, wait a few seconds, then run setup again.",
+                "Could not replace the existing ForgeFlow Lite installation because Windows is still locking one of its files. " +
+                "Setup already tried to close ForgeFlow and clean the old install. Restart Windows, then run setup again.",
                 ex);
         }
     }
@@ -472,6 +496,8 @@ internal static class Program
         {
             if (Directory.Exists(fullInstallDir))
             {
+                CloseRunningForgeFlowProcesses(fullInstallDir);
+                CloseAllForgeFlowProcesses();
                 MoveDirectoryWithRetry(fullInstallDir, backupDir);
                 backupCreated = true;
             }
@@ -479,7 +505,7 @@ internal static class Program
             MoveDirectoryWithRetry(tempInstallDir, fullInstallDir);
 
             if (backupCreated)
-                TryDeleteDirectory(backupDir);
+                DeleteDirectoryWithRetry(backupDir);
         }
         catch
         {
@@ -577,7 +603,7 @@ internal static class Program
 
     private static void MoveDirectoryWithRetry(string source, string destination)
     {
-        const int attempts = 8;
+        const int attempts = 18;
         for (int attempt = 1; attempt <= attempts; attempt++)
         {
             try
@@ -587,11 +613,36 @@ internal static class Program
             }
             catch when (attempt < attempts)
             {
-                Thread.Sleep(750);
+                CloseAllForgeFlowProcesses();
+                Thread.Sleep(1000);
             }
         }
 
         Directory.Move(source, destination);
+    }
+
+    private static void DeleteDirectoryWithRetry(string directory)
+    {
+        const int attempts = 18;
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                if (!Directory.Exists(directory))
+                    return;
+
+                Directory.Delete(directory, recursive: true);
+                return;
+            }
+            catch when (attempt < attempts)
+            {
+                CloseAllForgeFlowProcesses();
+                Thread.Sleep(1000);
+            }
+        }
+
+        if (Directory.Exists(directory))
+            Directory.Delete(directory, recursive: true);
     }
 
     private static void CleanupLegacyInstalls(string currentInstallDir)
@@ -614,7 +665,8 @@ internal static class Program
 
             try
             {
-                Directory.Delete(legacyDir, recursive: true);
+                CloseRunningForgeFlowProcesses(legacyDir);
+                DeleteDirectoryWithRetry(legacyDir);
             }
             catch
             {
