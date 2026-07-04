@@ -156,6 +156,7 @@ namespace ForgeFlow
                 });
 
                 _installerStarted = true;
+                Application.Current.Shutdown();
                 Close();
             }
             catch (OperationCanceledException)
