@@ -92,6 +92,8 @@ namespace ForgeFlow
             SelectComboItemByTag(ProcessingOrderComboBox, string.IsNullOrWhiteSpace(_settings.ProcessingOrder) ? "rife-then-upscale" : _settings.ProcessingOrder);
             SelectComboItemByTag(SubjectFocusComboBox, string.IsNullOrWhiteSpace(_settings.SubjectFocusMode) ? "off" : _settings.SubjectFocusMode);
             SubjectFocusStrengthSlider.Value = Math.Clamp(_settings.SubjectFocusStrength, 0, 100);
+            SelectComboItemByTag(VisualStyleComboBox, string.IsNullOrWhiteSpace(_settings.VisualStyle) ? "natural" : _settings.VisualStyle);
+            VisualStyleStrengthSlider.Value = Math.Clamp(_settings.VisualStyleStrength, 0, 100);
             LoadUpscaleProfiles();
             ToolsStatusTextBlock.Text = "Running startup checks...";
             ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
@@ -100,6 +102,7 @@ namespace ForgeFlow
             EstimateTextBlock.Text = "Start will unlock automatically when startup and update checks pass.";
             EstimateTextBlock.Foreground = Brushes.Gray;
             RefreshPresetInsight();
+            RefreshVisualStyleInsight();
             RefreshUpscaleInsight();
             RefreshSubjectFocusInsight();
             RefreshOutputPreview();
@@ -292,6 +295,7 @@ namespace ForgeFlow
                     VerboseLogging = false
                 };
                 ApplySelectedPreset(interpolator);
+                ApplySelectedVisualStyle(interpolator);
                 ApplySelectedHardwareMode(interpolator);
                 ApplySelectedMotion(interpolator);
                 ApplySelectedUpscaleProfile(interpolator);
@@ -303,6 +307,7 @@ namespace ForgeFlow
                 AppendLog("Hardware: " + GetEffectiveHardwareModeDisplayName());
                 AppendLog("Motion: " + GetSelectedMotionDisplayName());
                 AppendLog("Pipeline: " + GetSelectedProcessingOrderDisplayName());
+                AppendLog($"Visual style: {GetSelectedVisualStyleDisplayName()} ({GetSelectedVisualStyleStrengthPercent()}%)");
                 AppendLog("Quality boost: " + GetSelectedUpscaleProfile().DisplayName);
                 AppendLog($"Subject focus: {GetSelectedSubjectFocusDisplayName()} ({GetSelectedSubjectFocusStrengthPercent()}%)");
                 if (!AdvanceLicenseCheckpoint(guardSession, "processing-started")) return;
@@ -561,6 +566,36 @@ namespace ForgeFlow
             _settings.Save();
         }
 
+        private void VisualStyleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized)
+                return;
+
+            RefreshVisualStyleInsight();
+            RefreshOutputPreview();
+            if (_settings == null)
+                return;
+
+            _settings.VisualStyle = GetSelectedVisualStyleTag();
+            _settings.Save();
+        }
+
+        private void VisualStyleStrengthSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (VisualStyleStrengthTextBlock == null)
+                return;
+
+            int strength = GetSelectedVisualStyleStrengthPercent();
+            VisualStyleStrengthTextBlock.Text = strength + "%";
+            RefreshVisualStyleInsight();
+
+            if (!_uiInitialized || _settings == null)
+                return;
+
+            _settings.VisualStyleStrength = strength;
+            _settings.Save();
+        }
+
         private void OpenOutputFolderButton_Click(object sender, RoutedEventArgs e)
         {
             string output = OutputTextBox.Text.Trim();
@@ -753,7 +788,16 @@ namespace ForgeFlow
             if (!_uiInitialized)
                 return;
 
+            string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+            if (string.Equals(preset, "Aesthetic Vivid", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(VisualStyleComboBox, "tiktok-vivid");
+                if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 75)
+                    VisualStyleStrengthSlider.Value = 80;
+            }
+
             RefreshPresetInsight();
+            RefreshVisualStyleInsight();
             RefreshOutputPreview();
         }
 
@@ -1015,6 +1059,18 @@ namespace ForgeFlow
             };
         }
 
+        private void RefreshVisualStyleInsight()
+        {
+            if (VisualStyleStrengthSlider == null || VisualStyleStrengthTextBlock == null || PresetInsightTextBlock == null)
+                return;
+
+            bool vivid = !string.Equals(GetSelectedVisualStyleTag(), "natural", StringComparison.OrdinalIgnoreCase);
+            VisualStyleStrengthSlider.IsEnabled = vivid;
+            VisualStyleStrengthSlider.Opacity = vivid ? 1.0 : 0.35;
+            VisualStyleStrengthTextBlock.Opacity = vivid ? 1.0 : 0.35;
+            VisualStyleStrengthTextBlock.Text = GetSelectedVisualStyleStrengthPercent() + "%";
+        }
+
         private void RefreshProcessingOrderState()
         {
             ProcessingOrderComboBox.IsEnabled = true;
@@ -1079,6 +1135,26 @@ namespace ForgeFlow
                 SubjectFocusMode.EnhanceSubject => "Enhance Subject",
                 SubjectFocusMode.SoftenBackground => "Soften Background",
                 _ => "Off"
+            };
+        }
+
+        private string GetSelectedVisualStyleTag()
+        {
+            return (VisualStyleComboBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "natural";
+        }
+
+        private int GetSelectedVisualStyleStrengthPercent()
+        {
+            return (int)Math.Round(Math.Clamp(VisualStyleStrengthSlider?.Value ?? 70, 0, 100));
+        }
+
+        private string GetSelectedVisualStyleDisplayName()
+        {
+            return GetSelectedVisualStyleTag() switch
+            {
+                "tiktok-vivid" => "TikTok Vivid",
+                "tiktok-vivid-plus" => "Vivid+",
+                _ => "Natural"
             };
         }
 
@@ -1406,6 +1482,15 @@ namespace ForgeFlow
                     interpolator.TikTokBufSize = "100M";
                     interpolator.PngCompressionLevel = 1;
                     break;
+                case "Aesthetic Vivid":
+                    interpolator.PcCrf = 12;
+                    interpolator.PcPreset = "veryslow";
+                    interpolator.TikTokCrf = 14;
+                    interpolator.TikTokPreset = "veryslow";
+                    interpolator.TikTokMaxRate = "70M";
+                    interpolator.TikTokBufSize = "140M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
                 default:
                     interpolator.PcCrf = 15;
                     interpolator.PcPreset = "slow";
@@ -1416,6 +1501,12 @@ namespace ForgeFlow
                     interpolator.PngCompressionLevel = 1;
                     break;
             }
+        }
+
+        private void ApplySelectedVisualStyle(VideoInterpolator interpolator)
+        {
+            interpolator.EnhanceFilterStyle = GetSelectedVisualStyleTag();
+            interpolator.EnhanceFilterStrength = GetSelectedVisualStyleStrengthPercent() / 100.0;
         }
 
         private static void OpenUpdateUrl(string url)
@@ -1596,6 +1687,7 @@ namespace ForgeFlow
                 $"الوضع: {preset}\n" +
                 $"التسريع: {GetEffectiveHardwareModeDisplayName()}\n" +
                 $"السلاسة: {GetSelectedMotionDisplayName()}\n" +
+                $"ستايل الألوان: {GetSelectedVisualStyleDisplayName()} ({GetSelectedVisualStyleStrengthPercent()}%)\n" +
                 $"الترتيب: {GetSelectedProcessingOrderDisplayName()}\n" +
                 $"رفع الجودة: {GetSelectedUpscaleProfile().DisplayName}\n" +
                 $"{videoInfo}\n" +
@@ -2120,8 +2212,9 @@ namespace ForgeFlow
                 : $" | boosted via {GetSelectedUpscaleProfile().DisplayName}";
             string motionHint = IsRifeEnabled() ? " | RIFE on" : " | RIFE off";
             string hardwareHint = " | " + GetEffectiveHardwareModeDisplayName();
+            string styleHint = " | " + GetSelectedVisualStyleDisplayName();
             OutputPreviewTextBlock.Text =
-                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint + upscaleHint + motionHint + hardwareHint;
+                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint + upscaleHint + motionHint + styleHint + hardwareHint;
             OutputPreviewTextBlock.Foreground = Brushes.LightGray;
         }
 
@@ -2132,6 +2225,7 @@ namespace ForgeFlow
             {
                 "Fast" => "Fast is best for demos and urgent delivery with smaller files.",
                 "Quality" => "Quality is best for portfolio clips and client-facing masters.",
+                "Aesthetic Vivid" => "Aesthetic Vivid targets TikTok-style saturated color, clean sharpness, and high bitrate.",
                 _ => "Balanced keeps a practical mix of quality, size, and processing time."
             };
         }
@@ -2294,6 +2388,7 @@ namespace ForgeFlow
                 $"Preset: {preset}\r\n" +
                 $"Hardware: {GetEffectiveHardwareModeDisplayName()}\r\n" +
                 $"Motion: {GetSelectedMotionDisplayName()}\r\n" +
+                $"Visual style: {GetSelectedVisualStyleDisplayName()} ({GetSelectedVisualStyleStrengthPercent()}%)\r\n" +
                 $"Pipeline: {GetSelectedProcessingOrderDisplayName()}\r\n" +
                 $"Quality boost: {GetSelectedUpscaleProfile().DisplayName}\r\n" +
                 $"Input: {input}\r\n" +

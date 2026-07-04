@@ -108,6 +108,8 @@ namespace VideoProcessing
 
         // Filters
         public bool EnableEnhanceFilters { get; set; } = true;
+        public string EnhanceFilterStyle { get; set; } = "natural";
+        public double EnhanceFilterStrength { get; set; } = 0.70;
         public double FinalOutputTimeScale { get; set; } = 2.0;
         public string HardwareAccelerationMode { get; set; } = "cpu";
 
@@ -427,11 +429,48 @@ namespace VideoProcessing
             if (!EnableEnhanceFilters)
                 return "setsar=1";
 
+            double strength = Math.Clamp(EnhanceFilterStrength, 0.0, 1.0);
+            string style = (EnhanceFilterStyle ?? "natural").Trim().ToLowerInvariant();
+
+            double contrast = 1.06;
+            double brightness = 0.006;
+            double saturation = 1.05;
+            double gamma = 1.0;
+            double sharpness = 0.78;
+            double denoiseLuma = 0.9;
+            double denoiseChroma = 0.7;
+
+            if (style == "tiktok-vivid" || style == "aesthetic-vivid")
+            {
+                contrast = 1.06 + (0.09 * strength);
+                brightness = 0.004 + (0.006 * strength);
+                saturation = 1.08 + (0.32 * strength);
+                gamma = 0.995 - (0.035 * strength);
+                sharpness = 0.72 + (0.36 * strength);
+                denoiseLuma = 0.65;
+                denoiseChroma = 0.55;
+            }
+            else if (style == "tiktok-vivid-plus" || style == "aesthetic-vivid-plus")
+            {
+                contrast = 1.08 + (0.12 * strength);
+                brightness = 0.004 + (0.008 * strength);
+                saturation = 1.12 + (0.42 * strength);
+                gamma = 0.99 - (0.045 * strength);
+                sharpness = 0.84 + (0.42 * strength);
+                denoiseLuma = 0.55;
+                denoiseChroma = 0.50;
+            }
+
             return "setsar=1," +
-                   "hqdn3d=0.9:0.7:2.4:2.0," +
-                   "deband=1thr=0.012:2thr=0.012:3thr=0.012:4thr=0.012:range=12:blur=0," +
-                   "eq=contrast=1.06:brightness=0.006:saturation=1.05," +
-                   "unsharp=5:5:0.78";
+                   $"hqdn3d={FormatFilterNumber(denoiseLuma)}:{FormatFilterNumber(denoiseChroma)}:2.0:1.7," +
+                   "deband=1thr=0.010:2thr=0.010:3thr=0.010:4thr=0.010:range=12:blur=0," +
+                   $"eq=contrast={FormatFilterNumber(contrast)}:brightness={FormatFilterNumber(brightness)}:saturation={FormatFilterNumber(saturation)}:gamma={FormatFilterNumber(gamma)}," +
+                   $"unsharp=5:5:{FormatFilterNumber(sharpness)}";
+        }
+
+        private static string FormatFilterNumber(double value)
+        {
+            return value.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
         private bool UseNvidiaAcceleration => string.Equals(HardwareAccelerationMode, "nvidia", StringComparison.OrdinalIgnoreCase);

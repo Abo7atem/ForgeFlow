@@ -525,7 +525,7 @@
                             Margin="8,0,0,0"
                             Click="TestToolsButton_Click"/>
                     <ComboBox x:Name="PresetComboBox"
-                              Width="92"
+                              Width="110"
                               Height="26"
                               FontSize="11"
                               Margin="6,0,0,0"
@@ -534,7 +534,43 @@
                         <ComboBoxItem Content="Fast"/>
                         <ComboBoxItem Content="Balanced"/>
                         <ComboBoxItem Content="Quality"/>
+                        <ComboBoxItem Content="Aesthetic Vivid"/>
                     </ComboBox>
+                    <ComboBox x:Name="VisualStyleComboBox"
+                              Width="116"
+                              Height="26"
+                              FontSize="11"
+                              Margin="6,0,0,0"
+                              SelectionChanged="VisualStyleComboBox_SelectionChanged">
+                        <ComboBoxItem Content="Natural" Tag="natural"/>
+                        <ComboBoxItem Content="TikTok Vivid" Tag="tiktok-vivid"/>
+                        <ComboBoxItem Content="Vivid+" Tag="tiktok-vivid-plus"/>
+                    </ComboBox>
+                    <Grid Width="118"
+                          Height="26"
+                          Margin="6,0,0,0"
+                          ToolTip="Controls color, local contrast, and clean sharpening strength.">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="34"/>
+                        </Grid.ColumnDefinitions>
+                        <Slider x:Name="VisualStyleStrengthSlider"
+                                Grid.Column="0"
+                                Minimum="0"
+                                Maximum="100"
+                                Value="70"
+                                TickFrequency="5"
+                                IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ValueChanged="VisualStyleStrengthSlider_ValueChanged"/>
+                        <TextBlock x:Name="VisualStyleStrengthTextBlock"
+                                   Grid.Column="1"
+                                   Text="70%"
+                                   Foreground="#8E8E93"
+                                   FontSize="10"
+                                   TextAlignment="Right"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
                     <Button Content="About"
                             Height="26"
                             MinWidth="64"
