@@ -132,6 +132,7 @@ namespace VideoProcessing
         public string AudioArgs { get; set; } = "-c:a aac -b:a 192k";
 
         public bool VerboseLogging { get; set; } = false;
+        public bool UseNvidiaHevcEncoder { get; set; } = false;
 
         private string _tempSessionDirectory = "";
 
@@ -479,7 +480,12 @@ namespace VideoProcessing
         private string GetPcVideoEncoderArgs(bool forceCpu = false)
         {
             if (!forceCpu && UseNvidiaAcceleration)
+            {
+                if (UseNvidiaHevcEncoder)
+                    return $"-c:v hevc_nvenc -preset {MapNvencPreset(PcPreset)} -profile:v main -pix_fmt yuv420p -cq {Math.Max(1, PcCrf)}";
+
                 return $"-c:v h264_nvenc -preset {MapNvencPreset(PcPreset)} -profile:v high -pix_fmt yuv420p -cq {Math.Max(1, PcCrf)}";
+            }
 
             if (!forceCpu && UseAmdAcceleration)
                 return $"-c:v h264_amf -quality {MapAmfQuality(PcPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {Math.Max(1, PcCrf)} -qp_p {Math.Max(1, PcCrf)}";
@@ -490,7 +496,12 @@ namespace VideoProcessing
         private string GetTikTokVideoEncoderArgs(bool forceCpu = false)
         {
             if (!forceCpu && UseNvidiaAcceleration)
+            {
+                if (UseNvidiaHevcEncoder)
+                    return $"-c:v hevc_nvenc -preset {MapNvencPreset(TikTokPreset)} -profile:v main -pix_fmt yuv420p -cq {Math.Max(1, TikTokCrf)}";
+
                 return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTokPreset)} -profile:v high -pix_fmt yuv420p -cq {Math.Max(1, TikTokCrf)}";
+            }
 
             if (!forceCpu && UseAmdAcceleration)
                 return $"-c:v h264_amf -quality {MapAmfQuality(TikTokPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {Math.Max(1, TikTokCrf)} -qp_p {Math.Max(1, TikTokCrf)}";

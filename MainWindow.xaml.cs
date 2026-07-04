@@ -204,6 +204,9 @@ namespace ForgeFlow
             if (!WarnIfHeavyUpscaleThenRife())
                 return;
 
+            if (!ConfirmLargeFrameNvidiaEncoding())
+                return;
+
             if (SummaryCheckBox.IsChecked == true && !ConfirmProcessingSummary(input, output))
                 return;
 
@@ -915,6 +918,7 @@ namespace ForgeFlow
         {
             string mode = GetEffectiveHardwareMode();
             interpolator.HardwareAccelerationMode = mode;
+            interpolator.UseNvidiaHevcEncoder = ShouldUseNvidiaHevcEncoder();
         }
 
         private bool IsProActivated()
@@ -1186,11 +1190,20 @@ namespace ForgeFlow
             if (!string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase))
                 return selected;
 
-            (int width, _) = GetEstimatedOutputDimensions();
-            if (width > 4096)
+            (int width, int height) = GetEstimatedOutputDimensions();
+            if (Math.Max(width, height) > 8192)
                 return "cpu";
 
             return selected;
+        }
+
+        private bool ShouldUseNvidiaHevcEncoder()
+        {
+            if (!string.Equals(GetEffectiveHardwareMode(), "nvidia", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            (int width, int height) = GetEstimatedOutputDimensions();
+            return width > 4096 || height > 4096;
         }
 
         private string GetEffectiveHardwareModeDisplayName()
@@ -1198,7 +1211,10 @@ namespace ForgeFlow
             string selected = GetSelectedHardwareMode();
             string effective = GetEffectiveHardwareMode();
             if (string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase) && !string.Equals(effective, selected, StringComparison.OrdinalIgnoreCase))
-                return "CPU (NVENC skipped: width > 4096)";
+                return "CPU (NVENC skipped: frame > 8192)";
+
+            if (ShouldUseNvidiaHevcEncoder())
+                return "NVIDIA HEVC NVENC (large frame)";
 
             return effective switch
             {
@@ -1230,6 +1246,21 @@ namespace ForgeFlow
                 "هل تريد المتابعة رغم ذلك؟";
 
             return MessageBox.Show(this, message, "High VRAM Load Warning", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        }
+
+        private bool ConfirmLargeFrameNvidiaEncoding()
+        {
+            if (!ShouldUseNvidiaHevcEncoder())
+                return true;
+
+            (int width, int height) = GetEstimatedOutputDimensions();
+            string message =
+                "الدقة المتوقعة بعد رفع الجودة كبيرة على H.264 NVENC:\n\n" +
+                $"{width}x{height}\n\n" +
+                "سيستخدم ForgeFlow ترميز NVIDIA HEVC بدل H.264 لتجنب خطأ Invalid argument والرجوع البطيء إلى CPU.\n\n" +
+                "هل تريد المتابعة؟";
+
+            return MessageBox.Show(this, message, "Large NVIDIA Encode", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
         }
 
         private static void SelectComboItemByTag(ComboBox comboBox, string wantedTag)
