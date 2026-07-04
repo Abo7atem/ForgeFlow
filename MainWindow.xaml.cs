@@ -1448,7 +1448,14 @@ namespace ForgeFlow
                 if (showNoUpdateMessage)
                 {
                     AppendLog("WARNING: Update check failed: " + ex.Message);
-                    MessageBox.Show(this, "تعذر فحص التحديثات. تحقق من الإنترنت ثم حاول مرة أخرى.\n\n" + ex.Message, "Updates", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show(
+                        this,
+                        "تعذر فحص التحديثات حالياً. قد يكون GitHub مشغولاً أو وصل إلى حد الطلبات المؤقت.\n\n" +
+                        "انتظر دقيقة ثم اضغط Updates مرة أخرى، أو ثبّت آخر نسخة من صفحة التحديثات.\n\n" +
+                        ex.Message,
+                        "Updates",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
                 }
                 return false;
             }

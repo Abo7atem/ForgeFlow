@@ -11,6 +11,9 @@ namespace ForgeFlow
     public sealed class UpdateChecker : IDisposable
     {
         private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlowAPP/releases/latest";
+        private const string GitHubLatestReleaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest";
+        private const string GitHubReleaseTagBaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/tag/";
+        private const string GitHubReleaseDownloadBaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/download/";
         private const string StoreDownloadUrl = "https://4tiko.net";
         private readonly HttpClient _httpClient;
 
@@ -27,9 +30,24 @@ namespace ForgeFlow
 
         public async Task<UpdateInfo?> CheckForUpdatesAsync()
         {
+            try
+            {
+                return await CheckForUpdatesViaApiAsync().ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex) when (IsRateLimitOrTransientGitHubError(ex.StatusCode))
+            {
+                return await CheckForUpdatesViaPublicRedirectAsync("GitHub API was temporarily limited. Used public release fallback.").ConfigureAwait(false);
+            }
+        }
+
+        private async Task<UpdateInfo?> CheckForUpdatesViaApiAsync()
+        {
             using var response = await _httpClient.GetAsync(GitHubApiUrl).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 return null;
+
+            if (IsRateLimitOrTransientGitHubError(response.StatusCode))
+                return await CheckForUpdatesViaPublicRedirectAsync("GitHub API was temporarily limited. Used public release fallback.").ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
 
@@ -82,6 +100,78 @@ namespace ForgeFlow
                 IsMandatory = true,
                 MandatoryReason = reason
             };
+        }
+
+        private async Task<UpdateInfo?> CheckForUpdatesViaPublicRedirectAsync(string fallbackReason)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, GitHubLatestReleaseUrl);
+            request.Headers.Accept.Clear();
+            request.Headers.Accept.ParseAdd("text/html");
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                return null;
+
+            response.EnsureSuccessStatusCode();
+
+            string? tag = TryReadReleaseTagFromUrl(response.RequestMessage?.RequestUri);
+            if (string.IsNullOrWhiteSpace(tag))
+                return null;
+
+            Version current = GetCurrentVersion();
+            Version latest = ParseVersion(tag);
+            if (latest <= current)
+                return null;
+
+            string cleanVersion = latest.ToString();
+            string assetName = $"ForgeFlow_Lite_Setup_{cleanVersion}.exe";
+            string releaseUrl = GitHubReleaseTagBaseUrl + "v" + cleanVersion;
+            string downloadUrl = $"{GitHubReleaseDownloadBaseUrl}v{cleanVersion}/{assetName}";
+
+            return new UpdateInfo
+            {
+                CurrentVersion = current.ToString(),
+                LatestVersion = latest.ToString(),
+                ReleaseName = "ForgeFlow Lite v" + cleanVersion,
+                ReleaseNotes =
+                    fallbackReason + Environment.NewLine + Environment.NewLine +
+                    "mandatory=true" + Environment.NewLine +
+                    "force_update=true" + Environment.NewLine +
+                    "min_version=" + cleanVersion,
+                PublishedDate = DateTime.UtcNow,
+                ReleaseUrl = releaseUrl,
+                DownloadUrl = downloadUrl,
+                DownloadFileName = assetName,
+                DownloadSize = 0,
+                DownloadDigest = "",
+                HasDirectInstaller = true,
+                IsMandatory = true,
+                MandatoryReason = fallbackReason
+            };
+        }
+
+        private static bool IsRateLimitOrTransientGitHubError(HttpStatusCode? statusCode)
+        {
+            return statusCode is HttpStatusCode.Forbidden
+                or HttpStatusCode.TooManyRequests
+                or HttpStatusCode.BadGateway
+                or HttpStatusCode.ServiceUnavailable
+                or HttpStatusCode.GatewayTimeout;
+        }
+
+        private static string? TryReadReleaseTagFromUrl(Uri? uri)
+        {
+            if (uri == null)
+                return null;
+
+            string path = uri.AbsolutePath.TrimEnd('/');
+            const string marker = "/releases/tag/";
+            int index = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+                return null;
+
+            string tag = path[(index + marker.Length)..].Trim('/');
+            return string.IsNullOrWhiteSpace(tag) ? null : tag;
         }
 
         public static Version GetCurrentVersion()
