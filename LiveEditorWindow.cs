@@ -113,6 +113,7 @@ namespace ForgeFlow
         private string? _loadedVideoSource;
         private double? _pendingVideoPosition;
         private bool _resumeAfterVideoLoad;
+        private bool _handlingPlaybackBoundary;
 
         private sealed class TrimContext
         {
@@ -157,7 +158,8 @@ namespace ForgeFlow
             _media.MediaFailed += (_, args) => _status.Text = "تعذر فتح الفيديو في المعاينة: " + (args.ErrorException?.Message ?? "خطأ وسائط غير معروف");
             _media.MediaEnded += (_, _) =>
             {
-                if (!_playing || !AdvanceToNextTimelineClip()) { _playing = false; _clock.Stop(); }
+                if (!_playing || _handlingPlaybackBoundary) return;
+                HandlePlaybackBoundary();
             };
             Loaded += async (_, _) =>
             {
@@ -1716,6 +1718,12 @@ namespace ForgeFlow
             }
             else
             {
+                double playbackEnd = GetVideoPlaybackEnd();
+                if (playbackEnd > 0 && _timeline.Value >= playbackEnd - 0.01)
+                {
+                    EditTimelineModel.Clip? first = GetVideoClips().FirstOrDefault();
+                    Seek(first?.Start ?? 0);
+                }
                 _playbackRate = 1;
                 _media.SpeedRatio = 1;
                 _media.Play(); SyncExtraAudio(_timeline.Value, true); _clock.Start();
@@ -1726,13 +1734,13 @@ namespace ForgeFlow
         private void Tick()
         {
             if (_scrubbing || !_media.NaturalDuration.HasTimeSpan) return;
-            var clips = _model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Video).OrderBy(c => c.Start).ToList();
+            List<EditTimelineModel.Clip> clips = GetVideoClips();
             EditTimelineModel.Clip? current = clips.FirstOrDefault(c => _timeline.Value >= c.Start && _timeline.Value < c.End);
             if (current == null)
             {
                 EditTimelineModel.Clip? next = clips.FirstOrDefault(c => c.Start > _timeline.Value);
                 if (next != null) { Seek(next.Start); if (_playing) _media.Play(); }
-                else { _media.Pause(); _clock.Stop(); _playing = false; }
+                else CompletePlayback(GetVideoPlaybackEnd());
                 return;
             }
             if (_pendingVideoPosition != null) return;
@@ -1758,7 +1766,7 @@ namespace ForgeFlow
                     UpdatePlaybackPosition(Math.Clamp(positionAcrossCut, next.Start, next.End));
                     return;
                 }
-                if (!AdvanceToNextTimelineClip()) { _media.Pause(); _clock.Stop(); _playing = false; }
+                if (!AdvanceToNextTimelineClip(current)) CompletePlayback(current.End);
                 return;
             }
             double position = current.Start + (sourcePosition - current.SourceOffset);
@@ -1877,15 +1885,47 @@ namespace ForgeFlow
             return player;
         }
 
-        private bool AdvanceToNextTimelineClip()
+        private List<EditTimelineModel.Clip> GetVideoClips() => TimelinePlaybackNavigator.VideoClips(_model.Clips);
+
+        private double GetVideoPlaybackEnd() => TimelinePlaybackNavigator.PlaybackEnd(_model.Clips);
+
+        private void HandlePlaybackBoundary()
         {
-            EditTimelineModel.Clip? next = _model.Clips
-                .Where(c => c.Kind == EditTimelineModel.ClipKind.Video && c.Start >= _timeline.Value + 0.001)
-                .OrderBy(c => c.Start)
-                .FirstOrDefault();
+            if (_handlingPlaybackBoundary) return;
+            _handlingPlaybackBoundary = true;
+            try
+            {
+                EditTimelineModel.Clip? current = TimelinePlaybackNavigator.Current(_model.Clips, _timeline.Value);
+                if (!AdvanceToNextTimelineClip(current))
+                    CompletePlayback(current?.End ?? GetVideoPlaybackEnd());
+            }
+            finally
+            {
+                _handlingPlaybackBoundary = false;
+            }
+        }
+
+        private bool AdvanceToNextTimelineClip(EditTimelineModel.Clip? current = null)
+        {
+            EditTimelineModel.Clip? next = TimelinePlaybackNavigator.Next(_model.Clips, current, _timeline.Value);
             if (next == null) return false;
             Seek(next.Start);
+            if (_playing && _pendingVideoPosition == null) _media.Play();
             return true;
+        }
+
+        private void CompletePlayback(double end)
+        {
+            _media.Pause();
+            foreach (MediaElement player in _audioPlayers.Values) player.Pause();
+            _clock.Stop();
+            _playing = false;
+            _playbackRate = 1;
+            _media.SpeedRatio = 1;
+            end = Math.Clamp(end, 0, Math.Max(0, _model.Duration));
+            UpdatePlaybackPosition(end);
+            SyncPrimaryAudio(end);
+            _status.Text = "انتهت المعاينة بسلاسة — اضغط Space لإعادة التشغيل من البداية.";
         }
 
         private void RippleTrim(bool trimBefore)
@@ -2036,13 +2076,22 @@ namespace ForgeFlow
 
         private void DeleteSelected()
         {
-            if (_model.SelectedClip is { } selected && _lockedTracks.Contains(selected.Track))
+            if (_model.SelectedClip is not { } selected)
+            {
+                _status.Text = "حدد مقطعًا ثم اضغط Delete للحذف وإغلاق الفراغ.";
+                return;
+            }
+            if (_lockedTracks.Contains(selected.Track))
             {
                 _status.Text = $"المسار {selected.Track} مقفل."; return;
             }
+            double joinPosition = selected.Start;
+            PausePlayback();
             if (_model.DeleteSelected(_linked.IsChecked == true))
             {
-                RefreshEditor(); _status.Text = "تم حذف المقطع والتحمت المقاطع التالية تلقائيًا. Ctrl+Z للتراجع.";
+                RefreshEditor();
+                Seek(Math.Min(joinPosition, _model.Duration));
+                _status.Text = "تم حذف المقطع والتحمت المقاطع التالية — رأس التشغيل عند نقطة الالتحام. Space للمعاينة.";
             }
         }
 

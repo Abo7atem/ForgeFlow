@@ -14,7 +14,9 @@ static class TimelineDiagnostics
         Run("Track mute is included in the export model", TrackMute);
         Run("Overlay tracks are reused when clips do not overlap", OverlayTrackReuse);
         Run("Undo and redo restore an exact edit", UndoRedo);
-        Console.WriteLine($"Timeline diagnostics passed: {_passed}/8");
+        Run("Preview advances across a ripple cut with a stale playhead", PlaybackCrossesRippleCut);
+        Run("Preview completes exactly at the final edited frame", PlaybackCompletesAtEditedEnd);
+        Console.WriteLine($"Timeline diagnostics passed: {_passed}/10");
     }
 
     private static void SplitWithoutSelection()
@@ -39,7 +41,39 @@ static class TimelineDiagnostics
         Require(Nearly(model.Duration, 7), "duration did not ripple from 10s to 7s");
         EditTimelineModel.Clip last = model.Clips.Single(c => c.Track == "V1" && c.SourceOffset > 6.9);
         Require(Nearly(last.Start, 4) && Nearly(last.End, 7), "right clip did not close the gap");
+        Require(model.Clips.Any(c => c.Track == "V1" && Nearly(c.Start, middle.Start)), "ripple join has no playable clip at the deletion point");
         Require(model.Clips.Where(c => c.Track == "V1").OrderBy(c => c.Start).Zip(model.Clips.Where(c => c.Track == "V1").OrderBy(c => c.Start).Skip(1), (a, b) => Nearly(a.End, b.Start)).All(x => x), "V1 still contains a gap");
+    }
+
+    private static void PlaybackCrossesRippleCut()
+    {
+        var model = NewModel();
+        model.SplitAt(4);
+        model.SplitAt(7);
+        EditTimelineModel.Clip middle = model.Clips.Single(c => c.Track == "V1" && Nearly(c.Start, 4) && Nearly(c.End, 7));
+        model.Select(middle.Id);
+        model.DeleteSelected();
+
+        List<EditTimelineModel.Clip> video = TimelinePlaybackNavigator.VideoClips(model.Clips);
+        EditTimelineModel.Clip first = video[0];
+        Require(TimelinePlaybackNavigator.Current(model.Clips, 3.98)?.Id == first.Id, "boundary tolerance selected the next clip too early");
+        EditTimelineModel.Clip? next = TimelinePlaybackNavigator.Next(model.Clips, first, 3.94);
+        Require(next != null && Nearly(next.Start, 4), "preview did not advance to the ripple-joined clip");
+        Require(next != null && Nearly(next.SourceOffset, 7), "preview lost the source offset after the deleted range");
+    }
+
+    private static void PlaybackCompletesAtEditedEnd()
+    {
+        var model = NewModel();
+        model.SplitAt(4);
+        model.SplitAt(7);
+        EditTimelineModel.Clip middle = model.Clips.Single(c => c.Track == "V1" && Nearly(c.Start, 4) && Nearly(c.End, 7));
+        model.Select(middle.Id);
+        model.DeleteSelected();
+
+        EditTimelineModel.Clip last = TimelinePlaybackNavigator.VideoClips(model.Clips).Last();
+        Require(TimelinePlaybackNavigator.Next(model.Clips, last, 6.96) == null, "final clip incorrectly loops to another clip");
+        Require(Nearly(TimelinePlaybackNavigator.PlaybackEnd(model.Clips), 7), "preview end is not the edited timeline end");
     }
 
     private static void LinkedCopyPaste()
