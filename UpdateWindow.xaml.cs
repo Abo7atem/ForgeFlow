@@ -254,15 +254,15 @@ namespace ForgeFlow
             bool trustedHost =
                 host == "github.com" ||
                 host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase) ||
-                host == "4tiko.net" ||
-                host.EndsWith(".4tiko.net", StringComparison.OrdinalIgnoreCase) ||
+                host == "creators.sa" ||
+                host.EndsWith(".creators.sa", StringComparison.OrdinalIgnoreCase) ||
                 host == "objects.githubusercontent.com" ||
                 host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
 
             bool executablePath = uri.AbsolutePath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
             bool trustedRedirectHost =
-                host == "4tiko.net" ||
-                host.EndsWith(".4tiko.net", StringComparison.OrdinalIgnoreCase) ||
+                host == "creators.sa" ||
+                host.EndsWith(".creators.sa", StringComparison.OrdinalIgnoreCase) ||
                 host == "objects.githubusercontent.com" ||
                 host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
 
@@ -278,9 +278,9 @@ namespace ForgeFlow
                 return false;
 
             string lower = fileName.ToLowerInvariant();
-            return lower.EndsWith(".exe") &&
-                   lower.Contains("forgeflow") &&
-                   (lower.Contains("setup") || lower.Contains("installer"));
+            return lower.EndsWith(".exe", StringComparison.Ordinal) &&
+                   lower.Contains("forgeflow", StringComparison.Ordinal) &&
+                   (lower.Contains("setup", StringComparison.Ordinal) || lower.Contains("installer", StringComparison.Ordinal));
         }
 
         private static string BuildDownloadDetail(long readBytes, long totalBytes, DateTime startedAtUtc)

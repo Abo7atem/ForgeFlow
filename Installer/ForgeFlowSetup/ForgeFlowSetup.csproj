@@ -6,10 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>..\..\Assets\ForgeFlow.ico</ApplicationIcon>
-    <AssemblyName>ForgeFlow_Lite_Setup_1.0.59</AssemblyName>
-    <Version>1.0.59</Version>
-    <FileVersion>1.0.59.0</FileVersion>
-    <AssemblyVersion>1.0.59.0</AssemblyVersion>
+    <AssemblyName>ForgeFlow_Lite_Setup_1.1.2</AssemblyName>
+    <Version>1.1.2</Version>
+    <FileVersion>1.1.2.0</FileVersion>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

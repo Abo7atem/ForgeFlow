@@ -47,13 +47,18 @@ namespace ForgeFlow
         private readonly LicenseGuard _licenseGuard;
         private readonly UpdateChecker _updateChecker;
         private readonly AppSettings _settings;
+        private readonly VideoEditOptions _editOptions = new();
         private bool _updateGatePassed;
         private bool _updateCheckInProgress;
         private ToolCheckResult? _toolStatus;
         private VideoInfo? _selectedVideoInfo;
         private CancellationTokenSource? _videoInfoCts;
         private readonly DispatcherTimer _runnerTimer;
+        private readonly DispatcherTimer _inlinePreviewTimer;
         private int _runnerFrame;
+        private bool _inlinePreviewPlaying;
+        private bool _inlinePreviewSeeking;
+        private bool _inlinePreviewMuted;
         private readonly List<UpscaleProfile> _upscaleProfiles = new();
         private bool _uiInitialized;
         private static readonly BitmapImage RunnerImage = LoadEmojiImage("runner.png");
@@ -73,6 +78,8 @@ namespace ForgeFlow
             _settings = AppSettings.Load();
             _runnerTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(170) };
             _runnerTimer.Tick += (_, _) => AdvanceRunnerFrame();
+            _inlinePreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _inlinePreviewTimer.Tick += (_, _) => RefreshInlinePreviewTimeline();
             InputTextBox.TextChanged += (_, _) =>
             {
                 RefreshOutputPreview();
@@ -85,6 +92,7 @@ namespace ForgeFlow
             };
             StartButton.IsEnabled = false;
             ActivationButton.IsEnabled = false;
+            Glitch30Button.IsEnabled = false;
             CompletionSoundCheckBox.IsChecked = _settings.PlayCompletionSound;
             SummaryCheckBox.IsChecked = _settings.ShowProcessingSummary;
             SelectComboItemByTag(HardwareComboBox, string.IsNullOrWhiteSpace(_settings.HardwareAccelerationMode) ? "cpu" : _settings.HardwareAccelerationMode);
@@ -279,6 +287,7 @@ namespace ForgeFlow
                     // TikTok base output
                     TikTokEncodeFps = 120,
                     TikTokTargetFps = 30,
+                    FinalOutputTimeScale = 1.0,
                     TikTokPreset = "veryslow",
                     TikTokKeyintSeconds = 1,
 
@@ -345,6 +354,7 @@ namespace ForgeFlow
                 UpdateLicenseStatus();
 
                 string[] produced = GetExpectedOutputPaths(output);
+                LoadInlineOutputPreview(produced.FirstOrDefault(File.Exists));
                 var successWindow = new SuccessWindow(produced[0], produced[1])
                 {
                     Owner = this
@@ -393,6 +403,145 @@ namespace ForgeFlow
             if (!string.IsNullOrWhiteSpace(_lastInput)) InputTextBox.Text = _lastInput;
             if (!string.IsNullOrWhiteSpace(_lastOutput)) OutputTextBox.Text = _lastOutput;
             StartButton_Click(sender, e);
+        }
+
+        private async void Glitch30Button_Click(object sender, RoutedEventArgs e)
+        {
+            if (!await EnsureUpdateGateAsync())
+                return;
+
+            string input = InputTextBox.Text.Trim();
+            string ffmpeg = Path.Combine(GetBundledToolsDirectory(), "ffmpeg.exe");
+            if (!File.Exists(input) || !File.Exists(ffmpeg))
+            {
+                MessageBox.Show(this, "اختر فيديو صالحًا وتأكد من جاهزية FFmpeg أولًا.", "Glitch 30", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string outputDirectory = Path.GetDirectoryName(OutputTextBox.Text.Trim()) ?? Path.GetDirectoryName(input) ?? AppContext.BaseDirectory;
+            if (IsProtectedOrTemporaryOutputDirectory(outputDirectory))
+            {
+                MessageBox.Show(this, "اختر مجلد إخراج عادي مثل Desktop أو Videos.", "Glitch 30", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            Directory.CreateDirectory(outputDirectory);
+            string output = GetAvailableGlitch30OutputPath(outputDirectory);
+            LicenseGuard.GuardSession? session = _licenseGuard.BeginProcessingSession(out GuardDecision decision);
+            if (session == null)
+            {
+                MessageBox.Show(this, decision.Message, "Glitch 30", MessageBoxButton.OK, MessageBoxImage.Warning);
+                UpdateLicenseStatus();
+                return;
+            }
+
+            SetBusy(true);
+            RetryButton.IsEnabled = false;
+            _cts = new CancellationTokenSource();
+            try
+            {
+                AppendLog("== Glitch 30 ==");
+                AppendLog("Input: " + Path.GetFileName(input));
+                AppendLog("Output: " + output);
+                AppendLog("Mode: FFmpeg stream-copy slow-motion clip (2x time scale).");
+                SetProgressVisual(5, "⚡", "Glitch 30", Brushes.Orange);
+
+                if (!_licenseGuard.AdvanceProcessingSession(session, "glitch-configured", out string guardMessage))
+                    throw new InvalidOperationException(guardMessage);
+
+                string args = $"-hide_banner -y -nostdin -itsscale 2 -i {QuoteProcessArgument(input)} -map 0 -c:v copy -c:a copy {QuoteProcessArgument(output)}";
+                if (!_licenseGuard.AdvanceProcessingSession(session, "glitch-started", out guardMessage))
+                    throw new InvalidOperationException(guardMessage);
+
+                int exitCode = await RunGlitchFfmpegAsync(ffmpeg, args, outputDirectory, _cts.Token);
+                if (exitCode != 0 || !File.Exists(output) || new FileInfo(output).Length == 0)
+                    throw new InvalidOperationException($"FFmpeg failed to create Glitch 30 (exit code {exitCode}).");
+
+                if (!_licenseGuard.AdvanceProcessingSession(session, "glitch-output-created", out guardMessage) ||
+                    !_licenseGuard.AdvanceProcessingSession(session, "glitch-output-verified", out guardMessage) ||
+                    !_licenseGuard.CompleteProcessingSession(session, out guardMessage))
+                {
+                    TryDeleteGlitchOutput(output);
+                    throw new InvalidOperationException(guardMessage);
+                }
+
+                SetProgressVisual(100, "🎉", "Glitch 30 ready", Brushes.LightGreen);
+                StageLabel.Text = "Glitch 30 Done ✓";
+                AppendLog("Glitch 30 created: " + output);
+                UpdateLicenseStatus();
+                MessageBox.Show(this, "تم إنشاء ملف Glitch 30 بنجاح:\n" + output, "Glitch 30", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (OperationCanceledException)
+            {
+                AppendLog("Glitch 30 canceled.");
+                SetProgressMood("🛑", "Glitch canceled", Brushes.Goldenrod);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Glitch 30 failed: " + ex.Message);
+                FailUI("فشل Glitch 30:\n" + ex.Message);
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                SetBusy(false);
+            }
+        }
+
+        private void EditBeforeEnhanceButton_Click(object sender, RoutedEventArgs e)
+        {
+            string input = InputTextBox.Text.Trim();
+            if (!File.Exists(input)) { MessageBox.Show(this, "اختر فيديو أولًا.", "Edit Workspace"); return; }
+            new LiveEditorWindow(input, _editOptions) { Owner = this }.ShowDialog();
+        }
+
+        private static async Task<int> RunGlitchFfmpegAsync(string ffmpeg, string arguments, string workingDirectory, CancellationToken cancellationToken)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpeg,
+                Arguments = arguments,
+                WorkingDirectory = workingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
+            await process.WaitForExitAsync(cancellationToken);
+            return process.ExitCode;
+        }
+
+        private static string GetAvailableGlitch30OutputPath(string outputDirectory)
+        {
+            string candidate = Path.Combine(outputDirectory, "GLITCHED30.mp4");
+            if (!File.Exists(candidate))
+                return candidate;
+
+            for (int index = 2; index < 1000; index++)
+            {
+                candidate = Path.Combine(outputDirectory, $"GLITCHED30_{index}.mp4");
+                if (!File.Exists(candidate))
+                    return candidate;
+            }
+
+            return Path.Combine(outputDirectory, $"GLITCHED30_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+        }
+
+        private static string QuoteProcessArgument(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";
+
+        private static void TryDeleteGlitchOutput(string output)
+        {
+            try
+            {
+                if (File.Exists(output))
+                    File.Delete(output);
+            }
+            catch
+            {
+            }
         }
 
         private async void ActivationButton_Click(object sender, RoutedEventArgs e)
@@ -614,6 +763,7 @@ namespace ForgeFlow
             ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
             SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+            Glitch30Button.IsEnabled = !busy && CanRunGlitch30();
             RefreshStartHint();
         }
 
@@ -645,8 +795,21 @@ namespace ForgeFlow
             ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
             SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
+            Glitch30Button.IsEnabled = !busy && CanRunGlitch30();
             RefreshStartHint();
         }
+
+        private bool CanRunGlitch30()
+        {
+            string input = InputTextBox.Text.Trim();
+            string ffmpeg = Path.Combine(GetBundledToolsDirectory(), "ffmpeg.exe");
+            return _updateGatePassed &&
+                   File.Exists(input) &&
+                   SupportedVideoExtensions.Contains(Path.GetExtension(input), StringComparer.OrdinalIgnoreCase) &&
+                   File.Exists(ffmpeg) &&
+                   _licenseGuard.EvaluateAccess().Allowed;
+        }
+
 
         private void RefreshStartHint()
         {
@@ -817,8 +980,24 @@ namespace ForgeFlow
             });
 
             string toolsDir = GetBundledToolsDirectory();
+            string nanoVsrModelsDir = Path.Combine(toolsDir, "nanovsr");
             string realesrganModelsDir = Path.Combine(toolsDir, "models");
             string realcuganModelsDir = Path.Combine(toolsDir, "models-se");
+
+            string nanoVsrModel = Path.Combine(nanoVsrModelsDir, "nanovsr_644k_t15_directml.onnx");
+            if (File.Exists(nanoVsrModel))
+            {
+                _upscaleProfiles.Add(new UpscaleProfile
+                {
+                    Id = "nanovsr:nanovsr:nanovsr_644k_t15_directml.onnx",
+                    DisplayName = "NanoVSR Video x4",
+                    Insight = "Temporal 4x video restoration using 15-frame context and bundled DirectML GPU inference.",
+                    Engine = "nanovsr",
+                    ModelDirectoryName = "nanovsr",
+                    ModelName = "nanovsr_644k_t15_directml.onnx",
+                    Scale = 4
+                });
+            }
 
             if (Directory.Exists(realesrganModelsDir))
             {
@@ -897,6 +1076,11 @@ namespace ForgeFlow
                 _ => ""
             };
             interpolator.UpscaleEngine = profile.Engine;
+            // Let NCNN choose the Vulkan device and tile size from the actual frame/model.
+            // A fixed tile can be faster in a tiny benchmark but much slower for x3/x4 footage.
+            interpolator.UpscaleGpuId = "auto";
+            interpolator.UpscaleTileSize = 0;
+            interpolator.UpscaleThreads = "1:2:2";
         }
 
         private void ApplySelectedMotion(VideoInterpolator interpolator)
@@ -2083,6 +2267,7 @@ namespace ForgeFlow
         private async void SelectInputVideo(string videoPath)
         {
             InputTextBox.Text = videoPath;
+            LoadInlineInputPreview(videoPath);
             if (ShouldReplaceOutputPath())
                 OutputTextBox.Text = GetDefaultOutputPath(videoPath);
             else
@@ -2256,6 +2441,135 @@ namespace ForgeFlow
             OutputPreviewTextBlock.Foreground = Brushes.LightGray;
         }
 
+        private void LoadInlineInputPreview(string videoPath)
+        {
+            StopInlinePreview();
+            InlinePreviewInputMedia.Source = new Uri(videoPath);
+            InlinePreviewInputMedia.IsMuted = true;
+            InlinePreviewInputPlaceholder.Visibility = Visibility.Collapsed;
+            InlinePreviewInputStatusText.Text = Path.GetFileName(videoPath);
+
+            InlinePreviewOutputMedia.Stop();
+            InlinePreviewOutputMedia.Source = null;
+            InlinePreviewOutputPlaceholder.Visibility = Visibility.Visible;
+            InlinePreviewOutputStatusText.Text = "بانتظار المعالجة";
+            InlinePreviewSeekBar.Value = 0;
+            InlinePreviewSeekBar.IsEnabled = false;
+            InlinePreviewTimeText.Text = "0:00 / 0:00";
+        }
+
+        private void LoadInlineOutputPreview(string? outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath) || !File.Exists(outputPath))
+                return;
+
+            InlinePreviewOutputMedia.Stop();
+            InlinePreviewOutputMedia.Source = new Uri(outputPath);
+            InlinePreviewOutputMedia.IsMuted = _inlinePreviewMuted;
+            InlinePreviewOutputPlaceholder.Visibility = Visibility.Collapsed;
+            InlinePreviewOutputStatusText.Text = Path.GetFileName(outputPath);
+        }
+
+        private void InlinePreviewInputMedia_MediaOpened(object sender, RoutedEventArgs e)
+        {
+            InlinePreviewSeekBar.IsEnabled = InlinePreviewInputMedia.NaturalDuration.HasTimeSpan;
+        }
+
+        private void InlinePreviewOutputMedia_MediaOpened(object sender, RoutedEventArgs e)
+        {
+            InlinePreviewOutputPlaceholder.Visibility = Visibility.Collapsed;
+        }
+
+        private void InlinePreviewMedia_MediaEnded(object sender, RoutedEventArgs e)
+        {
+            StopInlinePreview();
+        }
+
+        private void InlinePreviewPlayButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_inlinePreviewPlaying)
+            {
+                InlinePreviewInputMedia.Pause();
+                InlinePreviewOutputMedia.Pause();
+                _inlinePreviewTimer.Stop();
+                _inlinePreviewPlaying = false;
+                InlinePreviewPlayButton.Content = "▶";
+                return;
+            }
+
+            InlinePreviewInputMedia.Play();
+            InlinePreviewOutputMedia.Play();
+            _inlinePreviewTimer.Start();
+            _inlinePreviewPlaying = true;
+            InlinePreviewPlayButton.Content = "❚❚";
+        }
+
+        private void InlinePreviewStopButton_Click(object sender, RoutedEventArgs e) => StopInlinePreview();
+
+        private void InlinePreviewMuteButton_Click(object sender, RoutedEventArgs e)
+        {
+            _inlinePreviewMuted = !_inlinePreviewMuted;
+            InlinePreviewInputMedia.IsMuted = true;
+            InlinePreviewOutputMedia.IsMuted = _inlinePreviewMuted;
+            InlinePreviewMuteButton.Content = _inlinePreviewMuted ? "🔇" : "🔊";
+        }
+
+        private void InlinePreviewSeekBar_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            _inlinePreviewSeeking = true;
+        }
+
+        private void InlinePreviewSeekBar_PreviewMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            _inlinePreviewSeeking = false;
+            if (!InlinePreviewInputMedia.NaturalDuration.HasTimeSpan)
+                return;
+
+            TimeSpan sourceDuration = InlinePreviewInputMedia.NaturalDuration.TimeSpan;
+            TimeSpan position = TimeSpan.FromSeconds(sourceDuration.TotalSeconds * InlinePreviewSeekBar.Value / 100);
+            InlinePreviewInputMedia.Position = position;
+            if (InlinePreviewOutputMedia.NaturalDuration.HasTimeSpan)
+            {
+                TimeSpan outputDuration = InlinePreviewOutputMedia.NaturalDuration.TimeSpan;
+                InlinePreviewOutputMedia.Position = TimeSpan.FromSeconds(Math.Min(position.TotalSeconds, outputDuration.TotalSeconds));
+            }
+        }
+
+        private void RefreshInlinePreviewTimeline()
+        {
+            if (_inlinePreviewSeeking || !InlinePreviewInputMedia.NaturalDuration.HasTimeSpan)
+                return;
+
+            TimeSpan duration = InlinePreviewInputMedia.NaturalDuration.TimeSpan;
+            if (duration.TotalSeconds <= 0)
+                return;
+
+            TimeSpan position = InlinePreviewInputMedia.Position;
+            InlinePreviewSeekBar.Value = Math.Clamp(position.TotalSeconds / duration.TotalSeconds * 100, 0, 100);
+            InlinePreviewTimeText.Text = $"{FormatPreviewTime(position)} / {FormatPreviewTime(duration)}";
+
+            if (InlinePreviewOutputMedia.NaturalDuration.HasTimeSpan)
+            {
+                TimeSpan outputDuration = InlinePreviewOutputMedia.NaturalDuration.TimeSpan;
+                if (Math.Abs((InlinePreviewOutputMedia.Position - position).TotalMilliseconds) > 350)
+                    InlinePreviewOutputMedia.Position = TimeSpan.FromSeconds(Math.Min(position.TotalSeconds, outputDuration.TotalSeconds));
+            }
+        }
+
+        private void StopInlinePreview()
+        {
+            InlinePreviewInputMedia.Stop();
+            InlinePreviewOutputMedia.Stop();
+            _inlinePreviewTimer.Stop();
+            _inlinePreviewPlaying = false;
+            InlinePreviewPlayButton.Content = "▶";
+            InlinePreviewSeekBar.Value = 0;
+        }
+
+        private static string FormatPreviewTime(TimeSpan time) => time.TotalHours >= 1
+            ? time.ToString(@"h\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture)
+            : time.ToString(@"m\:ss", System.Globalization.CultureInfo.InvariantCulture);
+
         private void RefreshPresetInsight()
         {
             string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
@@ -2325,7 +2639,7 @@ namespace ForgeFlow
             }
 
             // ── Progress bar update (silent) ──────────────────────────
-            if (msg.StartsWith("PROGRESS:"))
+            if (msg.StartsWith("PROGRESS:", StringComparison.Ordinal))
             {
                 if (int.TryParse(msg.Replace("PROGRESS:", "").Replace("%", "").Trim(), out int pct))
                 {
@@ -2335,7 +2649,7 @@ namespace ForgeFlow
             }
 
             // ── Stage label update ────────────────────────────────────
-            if (msg.StartsWith("STAGE:"))
+            if (msg.StartsWith("STAGE:", StringComparison.Ordinal))
             {
                 StageLabel.Text = msg.Replace("STAGE:", "").Trim();
                 ApplyStageMood(StageLabel.Text);
@@ -2344,22 +2658,22 @@ namespace ForgeFlow
             }
 
             // ── stderr lines: only show errors ────────────────────────
-            if (msg.StartsWith("[stderr]"))
+            if (msg.StartsWith("[stderr]", StringComparison.Ordinal))
             {
                 var inner = msg.Replace("[stderr]", "").Trim();
-                bool isError = inner.StartsWith("Error") || inner.StartsWith("error")
+                bool isError = inner.StartsWith("Error", StringComparison.Ordinal) || inner.StartsWith("error", StringComparison.Ordinal)
                             || inner.Contains("No such file")
                             || inner.Contains("Invalid")
                             || inner.Contains("failed")
                             || inner.Contains("Cannot")
-                            || inner.StartsWith("Warning");
+                            || inner.StartsWith("Warning", StringComparison.Ordinal);
                 if (isError)
                     AppendVisibleLog("  " + inner);
                 return;
             }
 
             // ── RIFE frame count ──────────────────────────────────────
-            if (msg.StartsWith("RIFE frames:"))
+            if (msg.StartsWith("RIFE frames:", StringComparison.Ordinal))
             {
                 string clean = msg
                     .Replace("RIFE frames: input=", "Frames: ")
@@ -2492,23 +2806,27 @@ namespace ForgeFlow
 
             return msg == "Started"
                 || msg == "Done."
-                || msg.StartsWith("Input:")
-                || msg.StartsWith("Output:")
-                || msg.StartsWith("Output folder:")
-                || msg.StartsWith("Hardware:")
-                || msg.StartsWith("Motion:")
-                || msg.StartsWith("Pipeline:")
-                || msg.StartsWith("Quality boost:")
-                || msg.StartsWith("Upscale model:")
-                || msg.StartsWith("Selected:")
-                || msg.StartsWith("Video 60FPS:")
-                || msg.StartsWith("TikTok30FPS:")
-                || msg.StartsWith("ERROR:")
-                || msg.StartsWith("WARNING:")
-                || msg.StartsWith("Unsupported file")
-                || msg.StartsWith("Canceled")
-                || msg.StartsWith("Canceling")
-                || msg.StartsWith("CRITICAL:");
+                || msg.StartsWith("Input:", StringComparison.Ordinal)
+                || msg.StartsWith("Output:", StringComparison.Ordinal)
+                || msg.StartsWith("Output folder:", StringComparison.Ordinal)
+                || msg.StartsWith("Hardware:", StringComparison.Ordinal)
+                || msg.StartsWith("Motion:", StringComparison.Ordinal)
+                || msg.StartsWith("Pipeline:", StringComparison.Ordinal)
+                || msg.StartsWith("Quality boost:", StringComparison.Ordinal)
+                || msg.StartsWith("Upscale model:", StringComparison.Ordinal)
+                || msg.StartsWith("Upscale acceleration:", StringComparison.Ordinal)
+                || msg.StartsWith("Upscale speed:", StringComparison.Ordinal)
+                || msg.StartsWith("Upscale:", StringComparison.Ordinal)
+                || msg.StartsWith("NVDEC", StringComparison.Ordinal)
+                || msg.StartsWith("Selected:", StringComparison.Ordinal)
+                || msg.StartsWith("Video 60FPS:", StringComparison.Ordinal)
+                || msg.StartsWith("TikTok30FPS:", StringComparison.Ordinal)
+                || msg.StartsWith("ERROR:", StringComparison.Ordinal)
+                || msg.StartsWith("WARNING:", StringComparison.Ordinal)
+                || msg.StartsWith("Unsupported file", StringComparison.Ordinal)
+                || msg.StartsWith("Canceled", StringComparison.Ordinal)
+                || msg.StartsWith("Canceling", StringComparison.Ordinal)
+                || msg.StartsWith("CRITICAL:", StringComparison.Ordinal);
         }
 
         private void ApplyProgressMood(int percent)

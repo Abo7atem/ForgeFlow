@@ -11,7 +11,7 @@ namespace ForgeFlow.Security
         private readonly LicenseManager _licenseManager;
         private readonly TextBox _keyBox;
         private readonly TextBlock _statusText;
-        private const string StoreUrl = "https://4tiko.net";
+        private const string StoreUrl = "https://creators.sa/a7atem";
 
         public LicenseWindow(LicenseManager licenseManager)
         {

@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ForgeFlow"
         Icon="Assets/ForgeFlow.ico"
-        Width="900" Height="630"
-        MinWidth="860" MinHeight="620"
+        Width="1400" Height="900"
+        MinWidth="1100" MinHeight="720"
         WindowStartupLocation="CenterScreen"
         Background="#0A0A0A"
         Foreground="#F5F5F7"
@@ -451,7 +451,7 @@
                        Foreground="#8E8E93"/>
             <TextBox Grid.Column="1" x:Name="InputTextBox" Height="34"
                      ToolTip="Drop a video here or anywhere in the ForgeFlow window."/>
-            <Button Grid.Column="3" Content="Browse"
+            <Button Grid.Column="3" Content="اختيار"
                     Height="34" Click="BrowseInput_Click"/>
         </Grid>
 
@@ -468,7 +468,7 @@
                        Foreground="#8E8E93"/>
             <TextBox Grid.Column="1" x:Name="OutputTextBox" Height="34"
                      ToolTip="ForgeFlow will create two files beside this path: *_Video 60FPS.mp4 and *_TikTok30FPS.mp4"/>
-            <Button Grid.Column="3" Content="Browse"
+            <Button Grid.Column="3" Content="اختيار"
                     Height="34" Click="BrowseOutput_Click"/>
         </Grid>
 
@@ -517,13 +517,30 @@
                         VerticalAlignment="Top">
                 <StackPanel Orientation="Horizontal"
                             HorizontalAlignment="Right">
-                    <Button Content="Test Tools"
+                    <Button Content="فحص الأدوات"
                             Height="26"
                             MinWidth="82"
                             Padding="10,0"
                             FontSize="11"
                             Margin="8,0,0,0"
                             Click="TestToolsButton_Click"/>
+                    <Button x:Name="Glitch30Button"
+                            Content="Glitch 30"
+                            Height="26"
+                            MinWidth="82"
+                            Padding="10,0"
+                            FontSize="11"
+                            Margin="6,0,0,0"
+                            Background="#D86600"
+                            BorderBrush="#D86600"
+                            Foreground="White"
+                            ToolTip="Create a GLITCHED30.mp4 slow-motion clip with FFmpeg only."
+                            Click="Glitch30Button_Click"/>
+                    <Button Content="فتح محرر الفيديو"
+                            Height="30" MinWidth="138" Padding="12,0" FontSize="11" FontWeight="SemiBold" Margin="6,0,0,0"
+                            Background="#176B87" BorderBrush="#2493B7" Foreground="White"
+                            ToolTip="محرر متعدد المسارات للقص والصوت والنصوص والصور والمؤثرات"
+                            Click="EditBeforeEnhanceButton_Click"/>
                     <ComboBox x:Name="PresetComboBox"
                               Width="110"
                               Height="26"
@@ -571,7 +588,7 @@
                                    TextAlignment="Right"
                                    VerticalAlignment="Center"/>
                     </Grid>
-                    <Button Content="About"
+                    <Button Content="حول"
                             Height="26"
                             MinWidth="64"
                             Padding="10,0"
@@ -731,8 +748,14 @@
             </StackPanel>
         </Grid>
 
-        <!-- Log Box -->
-        <Border Grid.Row="6"
+        <!-- Activity and integrated before/after preview -->
+        <Grid Grid.Row="6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+        <Border Grid.Column="0"
                 Background="#1C1C1E"
                 BorderBrush="#3A3A3C"
                 BorderThickness="1"
@@ -807,6 +830,69 @@
                 </Border>
             </Grid>
         </Border>
+
+        <Border Grid.Column="2"
+                Background="#111113"
+                BorderBrush="#5A341C"
+                BorderThickness="1"
+                CornerRadius="10"
+                Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="2,0,2,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="قبل — الأصلي" FontSize="12" FontWeight="SemiBold" Foreground="#8E8E93"/>
+                        <TextBlock x:Name="InlinePreviewInputStatusText" Text="اختر فيديو" FontSize="10" Foreground="#6E6E73" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="بعد — النتيجة" FontSize="12" FontWeight="SemiBold" Foreground="#D1D1D6"/>
+                        <TextBlock x:Name="InlinePreviewOutputStatusText" Text="بانتظار المعالجة" FontSize="10" Foreground="#6E6E73" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1" Background="#050505">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="1"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid Grid.Column="0">
+                        <TextBlock x:Name="InlinePreviewInputPlaceholder" Text="اختر فيديو لعرض الأصل" Foreground="#6E6E73" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <MediaElement x:Name="InlinePreviewInputMedia" LoadedBehavior="Manual" UnloadedBehavior="Stop" Stretch="Uniform" IsMuted="True" MediaOpened="InlinePreviewInputMedia_MediaOpened" MediaEnded="InlinePreviewMedia_MediaEnded"/>
+                    </Grid>
+                    <Border Grid.Column="1" Background="#5A341C" Margin="5,0"/>
+                    <Grid Grid.Column="2">
+                        <TextBlock x:Name="InlinePreviewOutputPlaceholder" Text="ستظهر النتيجة هنا بعد المعالجة" Foreground="#6E6E73" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <MediaElement x:Name="InlinePreviewOutputMedia" LoadedBehavior="Manual" UnloadedBehavior="Stop" Stretch="Uniform" MediaOpened="InlinePreviewOutputMedia_MediaOpened" MediaEnded="InlinePreviewMedia_MediaEnded"/>
+                    </Grid>
+                </Grid>
+
+                <Slider x:Name="InlinePreviewSeekBar" Grid.Row="2" Minimum="0" Maximum="100" Margin="0,10,0,4" IsEnabled="False" IsMoveToPointEnabled="True" PreviewMouseLeftButtonDown="InlinePreviewSeekBar_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="InlinePreviewSeekBar_PreviewMouseLeftButtonUp"/>
+                <Grid Grid.Row="3">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="InlinePreviewPlayButton" Grid.Column="0" Content="▶" Width="36" Height="28" Padding="0" Click="InlinePreviewPlayButton_Click"/>
+                    <Button Grid.Column="1" Content="■" Width="36" Height="28" Padding="0" Margin="5,0,0,0" Click="InlinePreviewStopButton_Click"/>
+                    <Button x:Name="InlinePreviewMuteButton" Grid.Column="2" Content="🔊" Width="42" Height="28" Padding="0" Margin="5,0,0,0" Click="InlinePreviewMuteButton_Click"/>
+                    <TextBlock x:Name="InlinePreviewTimeText" Grid.Column="3" Text="0:00 / 0:00" Foreground="#8E8E93" FontSize="11" FontFamily="Consolas" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </Grid>
+            </Grid>
+        </Border>
+        </Grid>
 
         <!-- Progress Bar -->
         <Grid Grid.Row="8">
@@ -921,7 +1007,19 @@
                            Foreground="#8E8E93"
                            FontSize="12"
                            VerticalAlignment="Center"/>
-                <TextBlock Text="  |  4tiko.net"
+                <Border Width="104"
+                        Height="34"
+                        Margin="10,0,4,0"
+                        ToolTip="صناعة سورية — Syrian Made">
+                    <Border.Background>
+                        <ImageBrush ImageSource="/Assets/SyrianMade.png"
+                                    ViewboxUnits="RelativeToBoundingBox"
+                                    Viewbox="0.18,0.28,0.66,0.42"
+                                    Stretch="Uniform"
+                                    RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Border.Background>
+                </Border>
+                <TextBlock Text="  |  creators.sa/a7atem"
                            Foreground="#D1D1D6"
                            FontSize="12"
                            FontWeight="SemiBold"
@@ -932,7 +1030,7 @@
                         Orientation="Horizontal"
                         HorizontalAlignment="Right">
                 <Button Content="Store"
-                        Tag="https://4tiko.net"
+                        Tag="https://creators.sa/a7atem"
                         Style="{StaticResource SocialButtonStyle}"
                         Click="SocialButton_Click"/>
                 <Button Content="YouTube"

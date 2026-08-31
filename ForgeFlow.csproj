@@ -6,9 +6,9 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.0.59</Version>
-    <FileVersion>1.0.59.0</FileVersion>
-    <AssemblyVersion>1.0.59.0</AssemblyVersion>
+    <Version>1.1.2</Version>
+    <FileVersion>1.1.2.0</FileVersion>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -19,19 +19,23 @@
   <ItemGroup>
     <Compile Remove="Installer\**\*.cs" />
     <Compile Remove="artifacts\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="Installer\**\*" />
     <EmbeddedResource Remove="artifacts\**\*" />
     <None Remove="Installer\**\*" />
     <None Remove="artifacts\**\*" />
+    <None Remove="tests\**\*" />
     <None Remove="Assets\ForgeFlow.ico" />
     <None Remove="Assets\ForgeFlow.png" />
     <None Remove="Assets\ForgeFlowMark.png" />
+    <None Remove="Assets\SyrianMade.png" />
     <Resource Include="Assets\ForgeFlow.ico" />
     <Resource Include="Assets\ForgeFlow.png" />
     <Resource Include="Assets\ForgeFlowMark.png" />
+    <Resource Include="Assets\SyrianMade.png" />
     <Resource Include="Assets\Emoji\*.png" />
     <None Update="Tools\**\*">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="Tools\tools.sha256" CopyToOutputDirectory="Always" />
     <None Include="version.txt">
@@ -40,8 +44,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.27.0" />
-    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.11" />
   </ItemGroup>
 
   <Target Name="CopyShortcutIcon" AfterTargets="Build;Publish">

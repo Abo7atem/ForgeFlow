@@ -10,11 +10,12 @@ namespace ForgeFlow
 {
     public sealed class UpdateChecker : IDisposable
     {
+        private static readonly JsonSerializerOptions GitHubJsonOptions = new() { PropertyNameCaseInsensitive = true };
         private const string GitHubApiUrl = "https://api.github.com/repos/Abo7atem/ForgeFlowAPP/releases/latest";
         private const string GitHubLatestReleaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/latest";
         private const string GitHubReleaseTagBaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/tag/";
         private const string GitHubReleaseDownloadBaseUrl = "https://github.com/Abo7atem/ForgeFlowAPP/releases/download/";
-        private const string StoreDownloadUrl = "https://4tiko.net";
+        private const string StoreDownloadUrl = "https://creators.sa/a7atem";
         private readonly HttpClient _httpClient;
 
         public UpdateChecker()
@@ -52,10 +53,7 @@ namespace ForgeFlow
             response.EnsureSuccessStatusCode();
 
             string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            var release = JsonSerializer.Deserialize<GitHubRelease>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var release = JsonSerializer.Deserialize<GitHubRelease>(json, GitHubJsonOptions);
 
             if (release == null || release.Prerelease)
                 return null;
@@ -301,10 +299,10 @@ namespace ForgeFlow
         {
             if (string.IsNullOrWhiteSpace(name)) return 0;
             string lower = name.ToLowerInvariant();
-            if (lower.StartsWith("forgeflow_lite_setup_") && lower.EndsWith(".exe")) return 100;
-            if (lower.Contains("forgeflow") && lower.Contains("setup") && lower.EndsWith(".exe")) return 90;
-            if (lower.EndsWith(".exe")) return 80;
-            if (lower.EndsWith(".msi")) return 60;
+            if (lower.StartsWith("forgeflow_lite_setup_", StringComparison.Ordinal) && lower.EndsWith(".exe", StringComparison.Ordinal)) return 100;
+            if (lower.Contains("forgeflow", StringComparison.Ordinal) && lower.Contains("setup", StringComparison.Ordinal) && lower.EndsWith(".exe", StringComparison.Ordinal)) return 90;
+            if (lower.EndsWith(".exe", StringComparison.Ordinal)) return 80;
+            if (lower.EndsWith(".msi", StringComparison.Ordinal)) return 60;
             return 0;
         }
 

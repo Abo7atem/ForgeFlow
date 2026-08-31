@@ -88,7 +88,7 @@ namespace VideoProcessing
         public string PcTune { get; set; } = "film";
         public int PcKeyintSeconds { get; set; } = 1;
 
-        // TikTok output: encode 120fps temp, then retime-copy with FFmpeg.
+        // Patched 30fps output: encode a 120fps intermediate, then retime it to 30fps.
         public int TikTokEncodeFps { get; set; } = 120;
         public double TikTokTargetFps { get; set; } = 30.0;
         public string TikTokPreset { get; set; } = "veryslow";
@@ -110,7 +110,7 @@ namespace VideoProcessing
         public bool EnableEnhanceFilters { get; set; } = true;
         public string EnhanceFilterStyle { get; set; } = "natural";
         public double EnhanceFilterStrength { get; set; } = 0.70;
-        public double FinalOutputTimeScale { get; set; } = 2.0;
+        public double FinalOutputTimeScale { get; set; } = 1.0;
         public string HardwareAccelerationMode { get; set; } = "cpu";
 
         // Optional bundled upscaling
@@ -121,6 +121,9 @@ namespace VideoProcessing
         public string UpscaleDisplayName { get; set; } = "";
         public string UpscaleEngine { get; set; } = "none";
         public int UpscaleScale { get; set; } = 1;
+        public string UpscaleGpuId { get; set; } = "auto";
+        public int UpscaleTileSize { get; set; } = 0;
+        public string UpscaleThreads { get; set; } = "1:2:2";
 
         // Optional foreground/person separation.
         public bool EnableSubjectFocus { get; set; } = false;
@@ -218,10 +221,20 @@ namespace VideoProcessing
                 progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Extracting frames");
                 progressCallback?.Invoke($"PROGRESS:{stageRange.Start}%");
                 string framePattern = $"frame_%08d.{IntermediateFrameFormat.ToLowerInvariant()}";
+                if (useNvdecForDecoding && UseNvidiaAcceleration)
+                    progressCallback?.Invoke("NVDEC decoding: adaptive mode (8 decoder threads).");
                 var extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdecForDecoding, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, stageRange.Start, stageRange.End).ConfigureAwait(false);
                 if (!extract.Success && useNvdecForDecoding && IsHardwareDecodeFailure(extract))
                 {
-                    progressCallback?.Invoke("NVDEC decode failed; retrying frame extraction with CPU decode.");
+                    progressCallback?.Invoke("NVDEC needs fewer decoder surfaces; retrying in compatibility mode (4 threads).");
+                    ClearFrameDirectory(inputFramesDir);
+                    extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: true, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, stageRange.Start, stageRange.End, nvdecThreads: 4).ConfigureAwait(false);
+                    if (extract.Success)
+                        progressCallback?.Invoke("NVDEC compatibility mode active; GPU decoding succeeded.");
+                }
+                if (!extract.Success && useNvdecForDecoding && IsHardwareDecodeFailure(extract))
+                {
+                    progressCallback?.Invoke("NVDEC is not available for this stream; continuing with CPU decoding while RIFE and encoding remain on GPU.");
                     ClearFrameDirectory(inputFramesDir);
                     extract = await ExtractFramesAsync(effectiveInput, inputFramesDir, framePattern, useNvdec: false, showConsoleWindows, progressCallback, cancellationToken, expectedExtractFrames, stageRange.Start, stageRange.End).ConfigureAwait(false);
                 }
@@ -328,11 +341,10 @@ namespace VideoProcessing
                 if (string.IsNullOrWhiteSpace(ext)) ext = ".mp4";
 
                 string pcOut = Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}");
-                string tt120Temp = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_TEMP{ext}");
-                string tikTok30PreFinal = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_PRE_FINAL{ext}");
+                string tikTok30Temp = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_TEMP{ext}");
                 string tikTok30Out = Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}");
 
-                int tikTokEncodeFps = EnableRifeInterpolation ? TikTokEncodeFps : (int)Math.Round(TikTokTargetFps);
+                int tikTokEncodeFps = Math.Max(120, TikTokEncodeFps);
 
                 if (GeneratePc60)
                 {
@@ -350,37 +362,21 @@ namespace VideoProcessing
                     stageNumber++;
                     stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Preparing TikTok30FPS");
-                    var ttRes = await EncodeTikTokWithFallbackAsync(tt120Temp, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
+                    var ttRes = await EncodeTikTokWithFallbackAsync(tikTok30Temp, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
                         tikTokEncodeFps,
                         showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!ttRes.Success) return ttRes;
                     progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
 
-                    if (EnableRifeInterpolation)
-                    {
-                        stageNumber++;
-                        stageRange = GetStageProgressRange(stageNumber, totalStages);
-                        progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Finalizing TikTok30FPS");
-                        var (tempFps, tempFpsResult) = await GetOriginalVideoFpsAsync(tt120Temp, progressCallback, cancellationToken).ConfigureAwait(false);
-                        if (tempFps == null || tempFps.Value <= 0)
-                            return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine temporary TikTok FPS: " + tempFpsResult.StandardError);
-
-                        double scaleToTargetFps = tempFps.Value / TikTokTargetFps;
-                        int retimeEnd = stageRange.Start + Math.Max(1, (stageRange.End - stageRange.Start) / 2);
-                        var retimeRes = await RetimeCopyAsync(tt120Temp, tikTok30PreFinal, scaleToTargetFps, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, retimeEnd)
-                            .ConfigureAwait(false);
-                        if (!retimeRes.Success) return retimeRes;
-                    }
-                    else
-                    {
-                        TryCopyFile(tt120Temp, tikTok30PreFinal);
-                    }
-
-                    progressCallback?.Invoke($"Applying TikTok final timing pass (itsscale {FinalOutputTimeScale:0.###})");
-                    int finalStart = EnableRifeInterpolation
-                        ? stageRange.Start + Math.Max(1, (stageRange.End - stageRange.Start) / 2)
-                        : stageRange.End;
-                    var tikTokFinalRes = await ApplyFinalTimeScaleAsync(tikTok30PreFinal, tikTok30Out, FinalOutputTimeScale, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, finalStart, 100).ConfigureAwait(false);
+                    stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Applying patched 30FPS timing");
+                    var (tempFps, tempFpsResult) = await GetOriginalVideoFpsAsync(tikTok30Temp, progressCallback, cancellationToken).ConfigureAwait(false);
+                    if (tempFps == null || tempFps.Value <= 0)
+                        return new ProcessExecutionResult(tempFpsResult.ExitCode, tempFpsResult.StandardOutput, "Failed to determine patched intermediate FPS: " + tempFpsResult.StandardError);
+                    double patchScale = tempFps.Value / Math.Max(1, TikTokTargetFps);
+                    progressCallback?.Invoke($"30FPS patch active: {tempFps.Value:0.###}fps intermediate -> {TikTokTargetFps:0.###}fps timing (scale {patchScale:0.###})");
+                    ProcessExecutionResult tikTokFinalRes = await RetimeCopyAsync(tikTok30Temp, tikTok30Out, patchScale, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, 100).ConfigureAwait(false);
                     if (!tikTokFinalRes.Success) return tikTokFinalRes;
 
                     progressCallback?.Invoke("PROGRESS:100%");
@@ -802,6 +798,20 @@ namespace VideoProcessing
 
             if (EnableUpscale)
             {
+                if (string.Equals(UpscaleEngine, "nanovsr", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.Equals(IntermediateFrameFormat, "png", StringComparison.OrdinalIgnoreCase))
+                        return "NanoVSR requires PNG intermediate frames.";
+
+                    if (string.IsNullOrWhiteSpace(UpscaleModelDirectory) || !Directory.Exists(UpscaleModelDirectory))
+                        return "NanoVSR model directory not found.";
+
+                    string nanoModelPath = Path.Combine(UpscaleModelDirectory, UpscaleModelName);
+                    if (string.IsNullOrWhiteSpace(UpscaleModelName) || !File.Exists(nanoModelPath))
+                        return "NanoVSR model file is missing.";
+                }
+                else
+                {
                 if (string.IsNullOrWhiteSpace(UpscaleExecutablePath) || !File.Exists(UpscaleExecutablePath))
                     return "Upscale executable not found.";
 
@@ -815,6 +825,7 @@ namespace VideoProcessing
                 string binPath = Path.Combine(UpscaleModelDirectory, UpscaleModelName + ".bin");
                 if (!File.Exists(paramPath) || !File.Exists(binPath))
                     return "Upscale model files are missing.";
+                }
             }
 
             if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off)
@@ -894,69 +905,121 @@ namespace VideoProcessing
             cb?.Invoke($"Upscale model: {upscaleLabel} [{UpscaleModelName}] ({UpscaleScale}x)");
             cb?.Invoke($"PROGRESS:{progressStart}%");
 
+            if (string.Equals(UpscaleEngine, "nanovsr", StringComparison.OrdinalIgnoreCase))
+            {
+                return await UpscaleNanoVsrFramesAsync(
+                    inputDir,
+                    outputDir,
+                    cb,
+                    ct,
+                    progressStart,
+                    progressEnd).ConfigureAwait(false);
+            }
+
             var argsList = new List<string>
             {
                 "-i", QuotePath(inputDir),
                 "-o", QuotePath(outputDir),
                 "-s", Math.Max(1, UpscaleScale).ToString(CultureInfo.InvariantCulture),
                 "-f", IntermediateFrameFormat.ToLowerInvariant(),
-                "-j", "1:2:2",
+                "-j", string.IsNullOrWhiteSpace(UpscaleThreads) ? "1:2:2" : UpscaleThreads,
                 "-m", QuotePath(UpscaleModelDirectory),
                 "-n", UpscaleModelName
             };
+
+            if (UpscaleTileSize >= 32)
+                argsList.AddRange(new[] { "-t", UpscaleTileSize.ToString(CultureInfo.InvariantCulture) });
+
+            if (!string.IsNullOrWhiteSpace(UpscaleGpuId)
+                && !string.Equals(UpscaleGpuId, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                argsList.AddRange(new[] { "-g", UpscaleGpuId });
+            }
 
             if (string.Equals(UpscaleEngine, "realcugan", StringComparison.OrdinalIgnoreCase))
                 argsList.AddRange(new[] { "-c", "3" });
 
             int expectedFrames = Directory.GetFiles(inputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length;
-            using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var pollTask = Task.Run(async () =>
+            int completedFrames = 0;
+            int lastReportedProgress = -1;
+            int lastReportedFrames = -1;
+            object progressSync = new();
+            int reportStride = Math.Max(1, expectedFrames / 50);
+
+            void ReportUpscaleProgress(int done)
             {
-                try
+                if (expectedFrames <= 0)
+                    return;
+
+                lock (progressSync)
                 {
-                    int lastReportedProgress = -1;
-                    int lastReportedFrames = -1;
-                    while (!pollCts.Token.IsCancellationRequested)
+                    done = Math.Clamp(done, 0, expectedFrames);
+                    double ratio = Math.Min(1.0, (double)done / expectedFrames);
+                    int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
+                    progress = Math.Clamp(progress, progressStart, progressEnd);
+                    if (progress != lastReportedProgress)
                     {
-                        await Task.Delay(900, pollCts.Token).ConfigureAwait(false);
-                        int done = Directory.Exists(outputDir)
-                            ? Directory.GetFiles(outputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length
-                            : 0;
+                        cb?.Invoke($"PROGRESS:{progress}%");
+                        lastReportedProgress = progress;
+                    }
 
-                        if (expectedFrames > 0)
-                        {
-                            double ratio = Math.Min(1.0, (double)done / expectedFrames);
-                            int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
-                            progress = Math.Clamp(progress, progressStart, progressEnd);
-                            if (progress != lastReportedProgress)
-                            {
-                                cb?.Invoke($"PROGRESS:{progress}%");
-                                lastReportedProgress = progress;
-                            }
-                        }
-
-                        if (done != lastReportedFrames)
-                        {
-                            cb?.Invoke(expectedFrames > 0
-                                ? $"Upscale: {done}/{expectedFrames} frames"
-                                : $"Upscale: {done} frames");
-                            lastReportedFrames = done;
-                        }
+                    if (done != lastReportedFrames && (done >= expectedFrames || done % reportStride == 0))
+                    {
+                        cb?.Invoke($"Upscale: {done}/{expectedFrames} frames");
+                        lastReportedFrames = done;
                     }
                 }
-                catch (OperationCanceledException) { }
-            }, CancellationToken.None);
+            }
+
+            string outputExtension = "." + IntermediateFrameFormat.ToLowerInvariant();
+            using var outputWatcher = new FileSystemWatcher(outputDir)
+            {
+                Filter = "*" + outputExtension,
+                NotifyFilter = NotifyFilters.FileName,
+                IncludeSubdirectories = false,
+                EnableRaisingEvents = true
+            };
+            outputWatcher.Created += (_, _) =>
+            {
+                int done = Interlocked.Increment(ref completedFrames);
+                ReportUpscaleProgress(done);
+            };
+
+            cb?.Invoke($"Upscale acceleration: GPU={UpscaleGpuId}, tile={UpscaleTileSize}, jobs={UpscaleThreads}");
+            var stopwatch = Stopwatch.StartNew();
+
+            void HandleUpscaleProcessMessage(string message)
+            {
+                string raw = message.StartsWith("[stderr] ", StringComparison.Ordinal)
+                    ? message[9..].Trim()
+                    : message.Trim();
+
+                // Real-ESRGAN writes tile percentages (often dozens per frame) to stderr.
+                // Forwarding each one synchronously to WPF can make the UI the bottleneck.
+                if (raw.EndsWith('%')
+                    && double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                {
+                    return;
+                }
+
+                bool diagnostic = raw.Contains("error", StringComparison.OrdinalIgnoreCase)
+                                  || raw.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                                  || raw.Contains("invalid", StringComparison.OrdinalIgnoreCase)
+                                  || raw.Contains("vkallocate", StringComparison.OrdinalIgnoreCase)
+                                  || raw.Contains("out of memory", StringComparison.OrdinalIgnoreCase);
+                if (VerboseLogging || diagnostic)
+                    cb?.Invoke(message);
+            }
 
             ProcessExecutionResult result;
-            try
-            {
-                result = await RunProcessAsync(UpscaleExecutablePath, string.Join(" ", argsList), showCmd, Path.GetDirectoryName(UpscaleExecutablePath), cb, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                pollCts.Cancel();
-                try { await pollTask.ConfigureAwait(false); } catch { }
-            }
+            result = await RunProcessAsync(
+                UpscaleExecutablePath,
+                string.Join(" ", argsList),
+                showCmd,
+                Path.GetDirectoryName(UpscaleExecutablePath),
+                HandleUpscaleProcessMessage,
+                ct).ConfigureAwait(false);
+            stopwatch.Stop();
 
             int finalDone = Directory.Exists(outputDir)
                 ? Directory.GetFiles(outputDir, $"*.{IntermediateFrameFormat.ToLowerInvariant()}").Length
@@ -964,10 +1027,76 @@ namespace VideoProcessing
             cb?.Invoke(expectedFrames > 0
                 ? $"Upscale: {finalDone}/{expectedFrames} frames"
                 : $"Upscale: {finalDone} frames");
+            if (finalDone > 0 && stopwatch.Elapsed.TotalSeconds > 0)
+                cb?.Invoke($"Upscale speed: {finalDone / stopwatch.Elapsed.TotalSeconds:F1} frames/s ({stopwatch.Elapsed:mm\\:ss})");
             if (result.Success)
                 cb?.Invoke($"PROGRESS:{progressEnd}%");
 
             return result;
+        }
+
+        private async Task<ProcessExecutionResult> UpscaleNanoVsrFramesAsync(
+            string inputDir,
+            string outputDir,
+            Action<string>? cb,
+            CancellationToken ct,
+            int progressStart,
+            int progressEnd)
+        {
+            string modelPath = Path.Combine(UpscaleModelDirectory, UpscaleModelName);
+            var stopwatch = Stopwatch.StartNew();
+            int lastProgress = -1;
+            int lastFrameReport = -1;
+
+            try
+            {
+                cb?.Invoke("Upscale acceleration: DirectML GPU, temporal window=15");
+                using var processor = new NanoVsrProcessor(modelPath);
+                await processor.ProcessDirectoryAsync(
+                    inputDir,
+                    outputDir,
+                    IntermediateFrameFormat,
+                    (done, total, elapsedSeconds) =>
+                    {
+                        double ratio = total > 0 ? Math.Min(1.0, (double)done / total) : 0;
+                        int progress = progressStart + (int)Math.Round((progressEnd - progressStart) * ratio);
+                        progress = Math.Clamp(progress, progressStart, progressEnd);
+                        if (progress != lastProgress)
+                        {
+                            cb?.Invoke($"PROGRESS:{progress}%");
+                            lastProgress = progress;
+                        }
+
+                        int reportStride = Math.Max(1, total / 50);
+                        if (done != lastFrameReport && (done == total || done % reportStride == 0))
+                        {
+                            double fps = elapsedSeconds > 0 ? done / elapsedSeconds : 0;
+                            cb?.Invoke($"NanoVSR: {done}/{total} frames ({fps:F1} frames/s)");
+                            lastFrameReport = done;
+                        }
+                    },
+                    ct,
+                    message => cb?.Invoke(message)).ConfigureAwait(false);
+
+                stopwatch.Stop();
+                int expected = Directory.GetFiles(inputDir, "*.png").Length;
+                int produced = Directory.GetFiles(outputDir, "*.png").Length;
+                if (produced != expected)
+                    return new ProcessExecutionResult(-1, "", $"NanoVSR produced {produced} of {expected} frames.");
+
+                if (produced > 0 && stopwatch.Elapsed.TotalSeconds > 0)
+                    cb?.Invoke($"Upscale speed: {produced / stopwatch.Elapsed.TotalSeconds:F1} frames/s ({stopwatch.Elapsed:mm\\:ss})");
+                cb?.Invoke($"PROGRESS:{progressEnd}%");
+                return new ProcessExecutionResult(0, "", "");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new ProcessExecutionResult(-1, "", "NanoVSR failed: " + ex.Message);
+            }
         }
 
         private static void TryCopyFile(string sourcePath, string destinationPath)
@@ -982,7 +1111,8 @@ namespace VideoProcessing
             bool showWindow,
             string? workingDirectory = null,
             Action<string>? progressCallback = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            ProcessPriorityClass? processPriority = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1022,7 +1152,15 @@ namespace VideoProcessing
                 };
             }
 
-            try { process.Start(); }
+            try
+            {
+                process.Start();
+                if (processPriority.HasValue)
+                {
+                    try { process.PriorityClass = processPriority.Value; }
+                    catch { }
+                }
+            }
             catch (Exception ex) { return new ProcessExecutionResult(-1, "", "Failed to start process: " + ex.Message); }
 
             if (!showWindow)
@@ -1243,11 +1381,12 @@ namespace VideoProcessing
             CancellationToken ct,
             int expectedFrames,
             int progressStart,
-            int progressEnd)
+            int progressEnd,
+            int nvdecThreads = 8)
         {
             string hw = "";
             if (useNvdec && UseNvidiaAcceleration)
-                hw = "-hwaccel cuda ";
+                hw = $"-threads {Math.Clamp(nvdecThreads, 1, 8)} -hwaccel cuda ";
             else if (UseAmdAcceleration)
                 hw = "-hwaccel d3d11va ";
 
@@ -1260,7 +1399,27 @@ namespace VideoProcessing
             args.Append("-progress pipe:1 -nostats ");
             args.Append(QuotePath(Path.Combine(outputDir, pattern)));
 
-            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateFrameProgressCallback(cb, progressStart, progressEnd, expectedFrames, "Extracting"), ct).ConfigureAwait(false);
+            Action<string>? frameProgress = CreateFrameProgressCallback(cb, progressStart, progressEnd, expectedFrames, "Extracting");
+            Action<string>? filteredProgress = frameProgress;
+            if (useNvdec && UseNvidiaAcceleration && frameProgress != null)
+            {
+                filteredProgress = message =>
+                {
+                    if (!IsTransientNvdecDiagnostic(message))
+                        frameProgress(message);
+                };
+            }
+
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, filteredProgress, ct).ConfigureAwait(false);
+        }
+
+        private static bool IsTransientNvdecDiagnostic(string message)
+        {
+            return message.Contains("cuda_error", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("cuvid", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("decode surfaces", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("hwaccel initialisation", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("failed setup for format cuda", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsHardwareDecodeFailure(ProcessExecutionResult result)

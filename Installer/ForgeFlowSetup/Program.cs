@@ -1026,7 +1026,7 @@ internal static class Program
         key.SetValue("DisplayIcon", exePath, RegistryValueKind.String);
         key.SetValue("UninstallString", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " + Quote(uninstallScript), RegistryValueKind.String);
         key.SetValue("QuietUninstallString", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " + Quote(uninstallScript), RegistryValueKind.String);
-        key.SetValue("URLInfoAbout", "https://4tiko.net", RegistryValueKind.String);
+        key.SetValue("URLInfoAbout", "https://creators.sa/a7atem", RegistryValueKind.String);
         key.SetValue("NoModify", 1, RegistryValueKind.DWord);
         key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
         key.SetValue("EstimatedSize", Math.Max(1, GetDirectorySizeKb(installDir)), RegistryValueKind.DWord);

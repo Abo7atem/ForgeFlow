@@ -26,7 +26,9 @@ namespace ForgeFlow
             @"ffprobe.exe",
             @"rife-ncnn-vulkan.exe",
             @"rife-v4.26\flownet.bin",
-            @"rife-v4.26\flownet.param"
+            @"rife-v4.26\flownet.param",
+            @"nanovsr\nanovsr_644k_t15_directml.onnx",
+            @"nanovsr\LICENSE-NanoVSR.txt"
         };
 
         public static ToolCheckResult Check(string baseDirectory, string? expectedVersion = null)

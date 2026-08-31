@@ -18,6 +18,8 @@ namespace ForgeFlow
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            Resources[typeof(System.Windows.Controls.ComboBox)] = DarkComboBoxStyles.CreateComboBoxStyle();
+            Resources[typeof(System.Windows.Controls.ComboBoxItem)] = DarkComboBoxStyles.CreateComboBoxItemStyle();
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;

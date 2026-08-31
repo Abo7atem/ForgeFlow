@@ -5,6 +5,7 @@ namespace ForgeFlow
 {
     internal sealed class AppSettings
     {
+        private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
         private static readonly string SettingsPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ForgeFlow",
@@ -48,7 +49,7 @@ namespace ForgeFlow
                 if (!string.IsNullOrWhiteSpace(dir))
                     Directory.CreateDirectory(dir);
 
-                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, SerializerOptions));
             }
             catch
             {

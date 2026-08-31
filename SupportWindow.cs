@@ -70,8 +70,8 @@ namespace ForgeFlow
                 Orientation = Orientation.Horizontal
             };
 
-            buttons.Children.Add(CreateActionButton("Buy License", "https://4tiko.net"));
-            buttons.Children.Add(CreateActionButton("Support Project", "https://4tiko.net"));
+            buttons.Children.Add(CreateActionButton("Buy License", "https://creators.sa/a7atem"));
+            buttons.Children.Add(CreateActionButton("Support Project", "https://creators.sa/a7atem"));
             buttons.Children.Add(CreateActionButton("YouTube", "https://youtube.com/@bo_7atemm"));
             buttons.Children.Add(CreateActionButton("Discord", "https://discord.gg/jF5uNEyg8r"));
 

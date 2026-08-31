@@ -27,10 +27,10 @@ namespace ForgeFlow
                 int borderColor = ToColorRef(0xFF, 0x9F, 0x0A);
                 int textColor = ToColorRef(0xF5, 0xF5, 0xF7);
 
-                DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref darkMode, sizeof(int));
-                DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref captionColor, sizeof(int));
-                DwmSetWindowAttribute(hwnd, DwmwaBorderColor, ref borderColor, sizeof(int));
-                DwmSetWindowAttribute(hwnd, DwmwaTextColor, ref textColor, sizeof(int));
+                _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref darkMode, sizeof(int));
+                _ = DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref captionColor, sizeof(int));
+                _ = DwmSetWindowAttribute(hwnd, DwmwaBorderColor, ref borderColor, sizeof(int));
+                _ = DwmSetWindowAttribute(hwnd, DwmwaTextColor, ref textColor, sizeof(int));
             }
             catch
             {

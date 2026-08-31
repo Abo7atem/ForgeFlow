@@ -35,7 +35,7 @@ namespace ForgeFlow
             root.Children.Add(CreateLine("Version", version));
             root.Children.Add(CreateLine("Plan", planStatus));
             root.Children.Add(CreateLine("Outputs", "Video 60FPS + TikTok30FPS"));
-            root.Children.Add(CreateLine("Website", "4tiko.net"));
+            root.Children.Add(CreateLine("Store", "creators.sa/a7atem"));
             root.Children.Add(new TextBlock
             {
                 Text = "جميع الحقوق محفوظة A.Hatem T-Zone SYR",

@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.IO;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -240,10 +241,10 @@ namespace ForgeFlow.Security
                     if (p.Length != 5) return null;
                     return new TrialData
                     {
-                        Count = int.Parse(p[0]),
+                        Count = int.Parse(p[0], CultureInfo.InvariantCulture),
                         HardwareId = p[1],
-                        FirstRunUtc = new DateTime(long.Parse(p[2]), DateTimeKind.Utc),
-                        LastRunUtc = new DateTime(long.Parse(p[3]), DateTimeKind.Utc),
+                        FirstRunUtc = new DateTime(long.Parse(p[2], CultureInfo.InvariantCulture), DateTimeKind.Utc),
+                        LastRunUtc = new DateTime(long.Parse(p[3], CultureInfo.InvariantCulture), DateTimeKind.Utc),
                         Tampered = p[4] == "1"
                     };
                 }

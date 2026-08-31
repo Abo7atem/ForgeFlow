@@ -95,7 +95,10 @@ echo Done.
 echo Setup:
 echo %FINAL_SETUP%
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-FileHash '%FINAL_SETUP%' -Algorithm SHA256 | Format-List"
+certutil -hashfile "%FINAL_SETUP%" SHA256
+if errorlevel 1 (
+    echo WARNING: Setup was built, but SHA256 could not be displayed.
+)
 pause
 exit /b 0
 
