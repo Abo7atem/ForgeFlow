@@ -323,6 +323,7 @@ namespace ForgeFlow
                     TikTok60UltraPreset = "veryslow",
                     EnableTikTokAudioDecoy = true,
                     TikTokAudioDecoyPacketMultiplier = 10,
+                    EnableTikTokTurboCopy = true,
 
                     // Pre-filter: disabled by default
                     EnablePreFilter = false,

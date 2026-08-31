@@ -112,6 +112,7 @@ namespace VideoProcessing
         public string TikTok60UltraPreset { get; set; } = "veryslow";
         public bool EnableTikTokAudioDecoy { get; set; } = true;
         public int TikTokAudioDecoyPacketMultiplier { get; set; } = 10;
+        public bool EnableTikTokTurboCopy { get; set; } = true;
 
         // Pre-filter input before frame extraction
         public bool EnablePreFilter { get; set; } = false;
@@ -377,10 +378,32 @@ namespace VideoProcessing
                 {
                     stageNumber++;
                     stageRange = GetStageProgressRange(stageNumber, totalStages);
-                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding TikTok 60 Ultra");
-                    progressCallback?.Invoke($"TikTok 60 Ultra profile: {TikTok60UltraBitrate} target / {TikTok60UltraMaxRate} max, 59.94 FPS, H.264 High.");
-                    var ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraTemp, encodeFramesDir, workingFramePattern, workingSequenceFps,
-                        inputVideoPath, audioStartTime, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
+                    bool useTurboCopy = EnableTikTokTurboCopy &&
+                                        originalFps.Value >= 59.0 && originalFps.Value <= 60.1 &&
+                                        !EnableRifeInterpolation && !EnableUpscale && !EnablePreFilter &&
+                                        (!EnableSubjectFocus || SubjectFocusMode == SubjectFocusMode.Off) &&
+                                        string.Equals(Path.GetExtension(inputVideoPath), ".mp4", StringComparison.OrdinalIgnoreCase);
+                    ProcessExecutionResult ultraRes;
+                    if (useTurboCopy)
+                    {
+                        progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} TikTok 60 Ultra Turbo Copy");
+                        progressCallback?.Invoke("TikTok Turbo Copy: preserving the original video bitstream without re-encoding.");
+                        ultraRes = await EncodeTikTok60TurboAsync(tikTok60UltraTemp, inputVideoPath, showConsoleWindows,
+                            progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
+                        if (!ultraRes.Success)
+                        {
+                            progressCallback?.Invoke("WARNING: Turbo Copy was not compatible with this source; falling back to Studio encode.");
+                            ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraTemp, encodeFramesDir, workingFramePattern, workingSequenceFps,
+                                inputVideoPath, audioStartTime, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding TikTok 60 Ultra Studio");
+                        progressCallback?.Invoke($"TikTok 60 Ultra Studio profile: {TikTok60UltraBitrate} target / {TikTok60UltraMaxRate} max, 59.94 FPS, H.264 High.");
+                        ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraTemp, encodeFramesDir, workingFramePattern, workingSequenceFps,
+                            inputVideoPath, audioStartTime, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
+                    }
                     if (!ultraRes.Success) return ultraRes;
                     if (EnableTikTokAudioDecoy)
                     {
@@ -686,6 +709,32 @@ namespace VideoProcessing
                 return $"-c:v h264_amf -quality {MapAmfQuality(TikTok60UltraPreset)} -profile:v high -pix_fmt yuv420p -rc hqvbr -qvbr_quality_level {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
 
             return $"-c:v libx264 -preset {TikTok60UltraPreset} -tune film -profile:v high -level:v 5.1 -pix_fmt yuv420p -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+        }
+
+        private async Task<ProcessExecutionResult> EncodeTikTok60TurboAsync(
+            string outputPath,
+            string originalVideoPath,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
+        {
+            var args = new StringBuilder();
+            args.Append("-y -nostdin ");
+            args.Append($"-i {QuotePath(originalVideoPath)} ");
+            args.Append("-map 0:v:0 -map 0:a:0? ");
+            if (EnableTikTokAudioDecoy) args.Append("-map 0:a:0? ");
+            args.Append("-c:v copy -c:a aac -b:a 256k -ar 48000 ");
+            if (EnableTikTokAudioDecoy)
+                args.Append("-disposition:a:0 default -disposition:a:1 0 -metadata:s:a:0 title=Main -metadata:s:a:1 title=TikTokCompatibility ");
+            args.Append("-map_metadata -1 -map_chapters -1 -avoid_negative_ts make_zero ");
+            args.Append("-loglevel warning -progress pipe:1 -nostats ");
+            args.Append(QuotePath(outputPath));
+
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory,
+                CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "TikTok Turbo Copy"), ct).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTok60UltraAsync(
