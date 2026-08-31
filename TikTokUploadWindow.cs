@@ -53,7 +53,7 @@ namespace ForgeFlow
 
             _uploadButton = CreateButton("رفع عبر Chrome", "#FE2C55", "#FE2C55");
             _uploadButton.Click += UploadButton_Click;
-            _openChromeButton = CreateButton("فتح Chrome", "#0F766E", "#14B8A6");
+            _openChromeButton = CreateButton("تسجيل الدخول", "#0F766E", "#14B8A6");
             _openChromeButton.Click += OpenChromeButton_Click;
             _cancelButton = CreateButton("إلغاء", "#27272A", "#3F3F46");
             _cancelButton.IsEnabled = false;
@@ -122,7 +122,7 @@ namespace ForgeFlow
                 Margin = new Thickness(0, 18, 0, 14),
                 Child = new TextBlock
                 {
-                    Text = "يفتح ForgeFlow نافذة Chrome مخصصة. في أول مرة سجّل الدخول إلى TikTok، ثم اترك صفحة TikTok Studio مفتوحة. سيختار التطبيق ملف الفيديو ويبدأ رفعه؛ راجع الغلاف والخصوصية واضغط «نشر» بنفسك داخل Chrome.",
+                    Text = "أول مرة: اضغط «تسجيل الدخول» لفتح Chrome عاديًا يقبل Google، سجّل دخول TikTok ثم أغلق نافذة Chrome بالكامل. بعد ذلك اختر الفيديو واضغط «رفع عبر Chrome». سيبدأ الرفع وتبقى مراجعة الغلاف والخصوصية وزر «نشر» داخل TikTok Studio.",
                     Foreground = Brush("#D4D4D8"),
                     TextWrapping = TextWrapping.Wrap,
                     FlowDirection = FlowDirection.RightToLeft,

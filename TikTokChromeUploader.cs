@@ -18,10 +18,16 @@ namespace ForgeFlow
 
         public async Task<TikTokUploadResult> OpenStudioAsync(CancellationToken cancellationToken)
         {
-            (int? port, string? error) = await EnsureChromeAsync(cancellationToken).ConfigureAwait(false);
-            return port.HasValue
-                ? TikTokUploadResult.Succeeded("تم فتح TikTok Studio في Chrome الخاص بـForgeFlow. سجّل الدخول إن لزم ثم عد إلى التطبيق لبدء الرفع.")
-                : TikTokUploadResult.Failed(error ?? "تعذر الاتصال بـChrome.");
+            string? chromePath = FindChromeExecutable();
+            if (chromePath == null)
+                return TikTokUploadResult.Failed("لم يتم العثور على Google Chrome. ثبّت Chrome ثم أعد المحاولة.");
+
+            Directory.CreateDirectory(_profileDirectory);
+            StatusChanged?.Invoke("تحضير Chrome العادي لتسجيل دخول Google/TikTok...");
+            await CloseDebugChromeIfRunningAsync(cancellationToken).ConfigureAwait(false);
+            StartLoginChrome(chromePath);
+            return TikTokUploadResult.Succeeded(
+                "تم فتح Chrome العادي بدون تحكم برمجي. سجّل الدخول إلى TikTok، ثم أغلق نافذة Chrome هذه بالكامل وارجع واضغط «رفع عبر Chrome».");
         }
 
         public async Task<TikTokUploadResult> UploadAsync(string videoPath, string caption, CancellationToken cancellationToken)
@@ -87,7 +93,53 @@ namespace ForgeFlow
             int? port = await WaitForDevToolsPortAsync(cancellationToken).ConfigureAwait(false);
             return port.HasValue
                 ? (port, null)
-                : (null, "تعذر الاتصال بـChrome. أغلق نافذة Chrome الخاصة بـForgeFlow ثم أعد المحاولة.");
+                : (null, "تعذر تفعيل وضع الرفع. أغلق جميع نوافذ Chrome الخاصة بـForgeFlow بعد تسجيل الدخول ثم أعد المحاولة.");
+        }
+
+        private void StartLoginChrome(string chromePath)
+        {
+            var start = new ProcessStartInfo(chromePath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = false
+            };
+            start.ArgumentList.Add("--user-data-dir=" + _profileDirectory);
+            start.ArgumentList.Add("--profile-directory=Default");
+            start.ArgumentList.Add("--no-first-run");
+            start.ArgumentList.Add("--no-default-browser-check");
+            start.ArgumentList.Add(UploadUrl);
+            Process.Start(start);
+        }
+
+        private async Task CloseDebugChromeIfRunningAsync(CancellationToken cancellationToken)
+        {
+            string activePortFile = Path.Combine(_profileDirectory, "DevToolsActivePort");
+            try
+            {
+                if (!File.Exists(activePortFile))
+                    return;
+
+                string? firstLine = (await File.ReadAllLinesAsync(activePortFile, cancellationToken).ConfigureAwait(false)).FirstOrDefault();
+                if (!int.TryParse(firstLine, out int port) || !await IsDevToolsReadyAsync(port, cancellationToken).ConfigureAwait(false))
+                    return;
+
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+                string json = await http.GetStringAsync($"http://127.0.0.1:{port}/json/version", cancellationToken).ConfigureAwait(false);
+                using JsonDocument document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty("webSocketDebuggerUrl", out JsonElement websocketElement))
+                    return;
+                string? websocket = websocketElement.GetString();
+                if (string.IsNullOrWhiteSpace(websocket))
+                    return;
+
+                await using var cdp = await ChromeDevToolsClient.ConnectAsync(websocket, cancellationToken).ConfigureAwait(false);
+                await cdp.SendAsync("Browser.close", new { }, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(700, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Login mode can still be launched manually if an old debug session is already gone.
+            }
         }
 
         private void StartChrome(string chromePath)
