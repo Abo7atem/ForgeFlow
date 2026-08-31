@@ -990,6 +990,12 @@ namespace ForgeFlow
                 if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 75)
                     VisualStyleStrengthSlider.Value = 80;
             }
+            else if (string.Equals(preset, "TikTok Ultra", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(VisualStyleComboBox, "tiktok-detail");
+                if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 70)
+                    VisualStyleStrengthSlider.Value = 75;
+            }
 
             RefreshPresetInsight();
             RefreshVisualStyleInsight();
@@ -1369,6 +1375,7 @@ namespace ForgeFlow
         {
             return GetSelectedVisualStyleTag() switch
             {
+                "tiktok-detail" => "TikTok Detail",
                 "tiktok-vivid" => "TikTok Vivid",
                 "tiktok-vivid-plus" => "Vivid+",
                 _ => "Natural"
@@ -1751,6 +1758,19 @@ namespace ForgeFlow
                     interpolator.TikTok60UltraBufSize = "96M";
                     interpolator.PngCompressionLevel = 1;
                     break;
+                case "TikTok Ultra":
+                    interpolator.PcCrf = 10;
+                    interpolator.PcPreset = "veryslow";
+                    interpolator.TikTokCrf = 12;
+                    interpolator.TikTokPreset = "veryslow";
+                    interpolator.TikTokMaxRate = "120M";
+                    interpolator.TikTokBufSize = "240M";
+                    interpolator.TikTok60UltraCrf = 8;
+                    interpolator.TikTok60UltraBitrate = "80M";
+                    interpolator.TikTok60UltraMaxRate = "120M";
+                    interpolator.TikTok60UltraBufSize = "240M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
                 default:
                     interpolator.PcCrf = 15;
                     interpolator.PcPreset = "slow";
@@ -1770,6 +1790,13 @@ namespace ForgeFlow
         {
             interpolator.EnhanceFilterStyle = GetSelectedVisualStyleTag();
             interpolator.EnhanceFilterStrength = GetSelectedVisualStyleStrengthPercent() / 100.0;
+            if (string.Equals(interpolator.EnhanceFilterStyle, "tiktok-detail", StringComparison.OrdinalIgnoreCase))
+            {
+                interpolator.TikTok60UltraCrf = 8;
+                interpolator.TikTok60UltraBitrate = "80M";
+                interpolator.TikTok60UltraMaxRate = "120M";
+                interpolator.TikTok60UltraBufSize = "240M";
+            }
         }
 
         private static void OpenUpdateUrl(string url)

@@ -382,6 +382,7 @@ namespace VideoProcessing
                                         originalFps.Value >= 59.0 && originalFps.Value <= 60.1 &&
                                         !EnableRifeInterpolation && !EnableUpscale && !EnablePreFilter &&
                                         (!EnableSubjectFocus || SubjectFocusMode == SubjectFocusMode.Off) &&
+                                        (!EnableEnhanceFilters || string.Equals(EnhanceFilterStyle, "natural", StringComparison.OrdinalIgnoreCase)) &&
                                         string.Equals(Path.GetExtension(inputVideoPath), ".mp4", StringComparison.OrdinalIgnoreCase);
                     ProcessExecutionResult ultraRes;
                     if (useTurboCopy)
@@ -496,6 +497,18 @@ namespace VideoProcessing
 
             double strength = Math.Clamp(EnhanceFilterStrength, 0.0, 1.0);
             string style = (EnhanceFilterStyle ?? "natural").Trim().ToLowerInvariant();
+
+            if (style == "tiktok-detail")
+            {
+                double detailContrast = 1.035 + (0.020 * strength);
+                double detailSaturation = 1.04 + (0.040 * strength);
+                double detailGamma = 0.995 - (0.010 * strength);
+                double detailCas = 0.72 + (0.24 * strength);
+                return "setsar=1," +
+                       "hqdn3d=0.35:0.25:1.0:0.8," +
+                       $"eq=contrast={FormatFilterNumber(detailContrast)}:brightness=0.002:saturation={FormatFilterNumber(detailSaturation)}:gamma={FormatFilterNumber(detailGamma)}," +
+                       $"cas=strength={FormatFilterNumber(detailCas)}";
+            }
 
             double contrast = 1.06;
             double brightness = 0.006;
