@@ -122,6 +122,11 @@ namespace VideoProcessing
         public bool EnableEnhanceFilters { get; set; } = true;
         public string EnhanceFilterStyle { get; set; } = "natural";
         public double EnhanceFilterStrength { get; set; } = 0.70;
+        public int SourceWidth { get; set; }
+        public int SourceHeight { get; set; }
+        public double SourceFps { get; set; }
+        public long SourceSizeBytes { get; set; }
+        public double SourceDurationSeconds { get; set; }
         public double FinalOutputTimeScale { get; set; } = 1.0;
         public string HardwareAccelerationMode { get; set; } = "cpu";
 
@@ -208,6 +213,8 @@ namespace VideoProcessing
                 progressCallback?.Invoke(EnableRifeInterpolation
                     ? $"Original FPS: {originalFps.Value:0.###} -> RIFE FPS: {workingSequenceFps:0.###}"
                     : $"Original FPS: {originalFps.Value:0.###} | RIFE disabled");
+                if (string.Equals(EnhanceFilterStyle, "gaming-restore", StringComparison.OrdinalIgnoreCase))
+                    progressCallback?.Invoke(GetGamingRestoreAnalysisMessage());
 
                 var (audioStartTime, _) = await GetAudioStartTimeAsync(inputVideoPath, progressCallback, cancellationToken).ConfigureAwait(false);
 
@@ -415,6 +422,19 @@ namespace VideoProcessing
                                 tikTok60UltraOut,
                                 Math.Clamp(TikTokAudioDecoyPacketMultiplier, 2, 20));
                             progressCallback?.Invoke(patch.Message);
+                            (bool valid, string validationMessage) = await ValidateTikTokPreservationOutputAsync(
+                                tikTok60UltraOut,
+                                durationSeconds,
+                                cancellationToken).ConfigureAwait(false);
+                            if (!valid)
+                            {
+                                File.Copy(tikTok60UltraTemp, tikTok60UltraOut, true);
+                                progressCallback?.Invoke("WARNING: TikTok preservation validation failed; clean upload-safe master restored. " + validationMessage);
+                            }
+                            else
+                            {
+                                progressCallback?.Invoke("TikTok preservation validation: PASS. " + validationMessage);
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -510,6 +530,16 @@ namespace VideoProcessing
                        $"cas=strength={FormatFilterNumber(detailCas)}";
             }
 
+            if (style == "gaming-restore")
+            {
+                GamingRestoreProfile profile = GetGamingRestoreProfile(strength);
+                return "setsar=1," +
+                       $"deblock=filter=weak:block=8:alpha={FormatFilterNumber(profile.Deblock)}:beta={FormatFilterNumber(profile.Deblock * 0.55)}:gamma={FormatFilterNumber(profile.Deblock * 0.42)}:delta={FormatFilterNumber(profile.Deblock * 0.42)}," +
+                       $"hqdn3d={FormatFilterNumber(profile.Denoise)}:{FormatFilterNumber(profile.Denoise * 0.72)}:{FormatFilterNumber(profile.Denoise * 2.15)}:{FormatFilterNumber(profile.Denoise * 1.65)}," +
+                       $"eq=contrast={FormatFilterNumber(profile.Contrast)}:brightness=0.001:saturation={FormatFilterNumber(profile.Saturation)}:gamma={FormatFilterNumber(profile.Gamma)}," +
+                       $"cas=strength={FormatFilterNumber(profile.Cas)}";
+            }
+
             double contrast = 1.06;
             double brightness = 0.006;
             double saturation = 1.05;
@@ -550,6 +580,46 @@ namespace VideoProcessing
         {
             return value.ToString("0.###", CultureInfo.InvariantCulture);
         }
+
+        private GamingRestoreProfile GetGamingRestoreProfile(double requestedStrength)
+        {
+            double estimatedBitrate = SourceDurationSeconds > 0
+                ? (SourceSizeBytes * 8.0) / SourceDurationSeconds
+                : 0;
+            double pixelsPerSecond = Math.Max(1.0, SourceWidth * (double)SourceHeight * Math.Max(1.0, SourceFps));
+            double bitsPerPixel = estimatedBitrate > 0 ? estimatedBitrate / pixelsPerSecond : 0.12;
+
+            // Lower-bitrate gameplay receives stronger cleanup. High-bitrate captures stay mild
+            // so HUD text and hard game edges are not damaged by unnecessary restoration.
+            double compressionNeed = Math.Clamp((0.22 - bitsPerPixel) / 0.18, 0.0, 1.0);
+            double adaptive = Math.Clamp((requestedStrength * 0.68) + (compressionNeed * 0.32), 0.20, 1.0);
+            return new GamingRestoreProfile(
+                Deblock: 0.018 + (0.050 * adaptive),
+                Denoise: 0.22 + (0.48 * adaptive),
+                Contrast: 1.018 + (0.026 * adaptive),
+                Saturation: 1.018 + (0.038 * adaptive),
+                Gamma: 0.999 - (0.010 * adaptive),
+                Cas: 0.54 + (0.34 * adaptive));
+        }
+
+        private string GetGamingRestoreAnalysisMessage()
+        {
+            double bitrateMbps = SourceDurationSeconds > 0
+                ? (SourceSizeBytes * 8.0 / SourceDurationSeconds) / 1_000_000.0
+                : 0;
+            double pixelsPerSecond = Math.Max(1.0, SourceWidth * (double)SourceHeight * Math.Max(1.0, SourceFps));
+            double bitsPerPixel = bitrateMbps > 0 ? (bitrateMbps * 1_000_000.0) / pixelsPerSecond : 0.12;
+            string level = bitsPerPixel < 0.09 ? "strong" : bitsPerPixel < 0.18 ? "balanced" : "light";
+            return $"Gaming Restore analysis: {SourceWidth}x{SourceHeight}, {SourceFps:0.##} FPS, ~{bitrateMbps:0.#} Mbps, {bitsPerPixel:0.###} bpp -> {level} adaptive restoration.";
+        }
+
+        private readonly record struct GamingRestoreProfile(
+            double Deblock,
+            double Denoise,
+            double Contrast,
+            double Saturation,
+            double Gamma,
+            double Cas);
 
         private bool UseNvidiaAcceleration => string.Equals(HardwareAccelerationMode, "nvidia", StringComparison.OrdinalIgnoreCase);
         private bool UseAmdAcceleration => string.Equals(HardwareAccelerationMode, "amd", StringComparison.OrdinalIgnoreCase);
@@ -712,11 +782,16 @@ namespace VideoProcessing
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "Video 60FPS"), ct).ConfigureAwait(false);
         }
 
-        private string GetTikTok60UltraEncoderArgs(bool forceCpu)
+        private string GetTikTok60UltraEncoderArgs(bool forceCpu, bool compatibilityMode)
         {
             int quality = Math.Clamp(TikTok60UltraCrf, 1, 30);
             if (!forceCpu && UseNvidiaAcceleration)
-                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTok60UltraPreset)} -tune hq -profile:v high -pix_fmt yuv420p -rc vbr -multipass fullres -cq {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+            {
+                string advanced = !compatibilityMode && string.Equals(EnhanceFilterStyle, "gaming-restore", StringComparison.OrdinalIgnoreCase)
+                    ? " -rc-lookahead 24 -lookahead_level 2 -spatial_aq 1 -aq-strength 8 -temporal_aq 1 -b_ref_mode middle"
+                    : "";
+                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTok60UltraPreset)} -tune hq -profile:v high -pix_fmt yuv420p -rc vbr -multipass fullres -cq {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}{advanced}";
+            }
 
             if (!forceCpu && UseAmdAcceleration)
                 return $"-c:v h264_amf -quality {MapAmfQuality(TikTok60UltraPreset)} -profile:v high -pix_fmt yuv420p -rc hqvbr -qvbr_quality_level {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
@@ -758,6 +833,7 @@ namespace VideoProcessing
             string originalVideoPath,
             double? audioOffset,
             bool forceCpu,
+            bool compatibilityMode,
             bool showCmd,
             Action<string>? cb,
             CancellationToken ct,
@@ -767,8 +843,10 @@ namespace VideoProcessing
         {
             const string outputRate = "60000/1001";
             const int keyint = 240;
-            string vf = FilterGraphMild() +
-                        $",scale=w='min(iw\\,4096)':h='min(ih\\,4096)':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos" +
+            string deliveryScale = string.Equals(EnhanceFilterStyle, "gaming-restore", StringComparison.OrdinalIgnoreCase)
+                ? ",scale=w='if(gte(iw\\,ih)\\,min(iw\\,1920)\\,min(iw\\,1080))':h='if(gte(iw\\,ih)\\,min(ih\\,1080)\\,min(ih\\,1920))':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos"
+                : ",scale=w='min(iw\\,4096)':h='min(ih\\,4096)':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos";
+            string vf = FilterGraphMild() + deliveryScale +
                         $",setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709,fps={outputRate}";
 
             var args = new StringBuilder();
@@ -780,8 +858,8 @@ namespace VideoProcessing
             args.Append("-map 0:v:0 -map 1:a:0? ");
             if (EnableTikTokAudioDecoy) args.Append("-map 1:a:0? ");
             args.Append($"-vf \"{vf}\" ");
-            args.Append(GetTikTok60UltraEncoderArgs(forceCpu) + " ");
-            args.Append($"-r {outputRate} -fps_mode cfr -g {keyint} -keyint_min {keyint} -sc_threshold 0 -bf 2 ");
+            args.Append(GetTikTok60UltraEncoderArgs(forceCpu, compatibilityMode) + " ");
+            args.Append($"-r {outputRate} -fps_mode cfr -g {keyint} -keyint_min {keyint / 2} -sc_threshold 0 -bf 3 ");
             args.Append("-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv ");
             args.Append("-c:a aac -b:a 256k -ar 48000 ");
             if (EnableTikTokAudioDecoy)
@@ -809,7 +887,7 @@ namespace VideoProcessing
             int progressEnd)
         {
             ProcessExecutionResult result = await EncodeTikTok60UltraAsync(outputPath, framesDir, pattern, sourceSequenceFps,
-                originalVideoPath, audioOffset, forceCpu: false, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
+                originalVideoPath, audioOffset, forceCpu: false, compatibilityMode: false, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
             if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
                 return result;
 
@@ -823,9 +901,15 @@ namespace VideoProcessing
             if (!hardwareFailure)
                 return result;
 
+            cb?.Invoke("WARNING: Advanced NVENC options were not accepted; retrying the NVIDIA compatibility profile.");
+            ProcessExecutionResult compatibilityResult = await EncodeTikTok60UltraAsync(outputPath, framesDir, pattern, sourceSequenceFps,
+                originalVideoPath, audioOffset, forceCpu: false, compatibilityMode: true, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
+            if (compatibilityResult.Success)
+                return compatibilityResult;
+
             cb?.Invoke("WARNING: Hardware encoder failed for TikTok 60 Ultra. Falling back to CPU H.264.");
             return await EncodeTikTok60UltraAsync(outputPath, framesDir, pattern, sourceSequenceFps, originalVideoPath,
-                audioOffset, forceCpu: true, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
+                audioOffset, forceCpu: true, compatibilityMode: true, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTok120Async(
@@ -1550,6 +1634,42 @@ namespace VideoProcessing
                 return (duration, result);
 
             return (null, result);
+        }
+
+        private async Task<(bool Valid, string Message)> ValidateTikTokPreservationOutputAsync(
+            string videoPath,
+            double? expectedDurationSeconds,
+            CancellationToken ct)
+        {
+            if (!File.Exists(videoPath) || new FileInfo(videoPath).Length < 64 * 1024)
+                return (false, "Output file is missing or unexpectedly small.");
+
+            var (fps, fpsResult) = await GetOriginalVideoFpsAsync(videoPath, null, ct).ConfigureAwait(false);
+            if (!fpsResult.Success || fps == null || fps.Value < 55 || fps.Value > 61)
+                return (false, $"Unexpected video cadence: {(fps?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown")} FPS.");
+
+            var (duration, durationResult) = await GetVideoDurationAsync(videoPath, null, ct).ConfigureAwait(false);
+            if (!durationResult.Success || duration == null)
+                return (false, "Could not validate MP4 duration.");
+
+            if (expectedDurationSeconds.HasValue && expectedDurationSeconds.Value > 0)
+            {
+                double tolerance = Math.Max(0.35, expectedDurationSeconds.Value * 0.035);
+                if (Math.Abs(duration.Value - expectedDurationSeconds.Value) > tolerance)
+                    return (false, $"Duration changed from {expectedDurationSeconds.Value:0.###}s to {duration.Value:0.###}s.");
+            }
+
+            string decodeArgs = $"-v error -i {QuotePath(videoPath)} -map 0:v:0 -frames:v 2 -f null -";
+            ProcessExecutionResult decode = await RunProcessAsync(
+                FfmpegExecutablePath,
+                decodeArgs,
+                false,
+                progressCallback: null,
+                cancellationToken: ct).ConfigureAwait(false);
+            if (!decode.Success)
+                return (false, "Video stream failed the decode smoke test: " + decode.StandardError.Trim());
+
+            return (true, $"{fps.Value:0.###} FPS, {duration.Value:0.###}s, MP4 decode OK.");
         }
 
         private async Task<(double? StartTime, ProcessExecutionResult Result)> GetAudioStartTimeAsync(

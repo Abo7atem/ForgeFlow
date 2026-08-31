@@ -552,6 +552,7 @@
                         <ComboBoxItem Content="Balanced"/>
                         <ComboBoxItem Content="Quality"/>
                         <ComboBoxItem Content="TikTok Ultra"/>
+                        <ComboBoxItem Content="Gaming Restore Ultra"/>
                         <ComboBoxItem Content="Aesthetic Vivid"/>
                     </ComboBox>
                     <ComboBox x:Name="VisualStyleComboBox"
@@ -562,6 +563,7 @@
                               SelectionChanged="VisualStyleComboBox_SelectionChanged">
                         <ComboBoxItem Content="Natural" Tag="natural"/>
                         <ComboBoxItem Content="TikTok Detail" Tag="tiktok-detail"/>
+                        <ComboBoxItem Content="Gaming Restore" Tag="gaming-restore"/>
                         <ComboBoxItem Content="TikTok Vivid" Tag="tiktok-vivid"/>
                         <ComboBoxItem Content="Vivid+" Tag="tiktok-vivid-plus"/>
                     </ComboBox>

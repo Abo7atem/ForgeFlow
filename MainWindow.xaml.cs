@@ -331,6 +331,11 @@ namespace ForgeFlow
 
                     // Filters
                     EnableEnhanceFilters = true,
+                    SourceWidth = _selectedVideoInfo?.Width ?? 0,
+                    SourceHeight = _selectedVideoInfo?.Height ?? 0,
+                    SourceFps = _selectedVideoInfo?.Fps ?? 0,
+                    SourceSizeBytes = _selectedVideoInfo?.SizeBytes ?? 0,
+                    SourceDurationSeconds = _selectedVideoInfo?.DurationSeconds ?? 0,
 
                     // Logging
                     VerboseLogging = false
@@ -996,6 +1001,12 @@ namespace ForgeFlow
                 if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 70)
                     VisualStyleStrengthSlider.Value = 75;
             }
+            else if (string.Equals(preset, "Gaming Restore Ultra", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(VisualStyleComboBox, "gaming-restore");
+                if (VisualStyleStrengthSlider != null)
+                    VisualStyleStrengthSlider.Value = 72;
+            }
 
             RefreshPresetInsight();
             RefreshVisualStyleInsight();
@@ -1376,6 +1387,7 @@ namespace ForgeFlow
             return GetSelectedVisualStyleTag() switch
             {
                 "tiktok-detail" => "TikTok Detail",
+                "gaming-restore" => "Gaming Restore",
                 "tiktok-vivid" => "TikTok Vivid",
                 "tiktok-vivid-plus" => "Vivid+",
                 _ => "Natural"
@@ -1771,6 +1783,19 @@ namespace ForgeFlow
                     interpolator.TikTok60UltraBufSize = "240M";
                     interpolator.PngCompressionLevel = 1;
                     break;
+                case "Gaming Restore Ultra":
+                    interpolator.PcCrf = 10;
+                    interpolator.PcPreset = "veryslow";
+                    interpolator.TikTokCrf = 12;
+                    interpolator.TikTokPreset = "veryslow";
+                    interpolator.TikTokMaxRate = "96M";
+                    interpolator.TikTokBufSize = "192M";
+                    interpolator.TikTok60UltraCrf = 9;
+                    interpolator.TikTok60UltraBitrate = "48M";
+                    interpolator.TikTok60UltraMaxRate = "80M";
+                    interpolator.TikTok60UltraBufSize = "160M";
+                    interpolator.PngCompressionLevel = 1;
+                    break;
                 default:
                     interpolator.PcCrf = 15;
                     interpolator.PcPreset = "slow";
@@ -1796,6 +1821,13 @@ namespace ForgeFlow
                 interpolator.TikTok60UltraBitrate = "80M";
                 interpolator.TikTok60UltraMaxRate = "120M";
                 interpolator.TikTok60UltraBufSize = "240M";
+            }
+            else if (string.Equals(interpolator.EnhanceFilterStyle, "gaming-restore", StringComparison.OrdinalIgnoreCase))
+            {
+                interpolator.TikTok60UltraCrf = Math.Min(interpolator.TikTok60UltraCrf, 9);
+                interpolator.TikTok60UltraBitrate = "48M";
+                interpolator.TikTok60UltraMaxRate = "80M";
+                interpolator.TikTok60UltraBufSize = "160M";
             }
         }
 
@@ -2647,6 +2679,8 @@ namespace ForgeFlow
             {
                 "Fast" => "Fast is best for demos and urgent delivery with smaller files.",
                 "Quality" => "Quality is best for portfolio clips and client-facing masters.",
+                "TikTok Ultra" => "TikTok Ultra preserves a high-quality 59.94 FPS upload master.",
+                "Gaming Restore Ultra" => "Gaming Restore Ultra analyzes compressed gameplay, reduces block and ringing artifacts, restores edges, and creates an upload-safe 59.94 FPS master.",
                 "Aesthetic Vivid" => "Aesthetic Vivid targets TikTok-style saturated color, clean sharpness, and high bitrate.",
                 _ => "Balanced keeps a practical mix of quality, size, and processing time."
             };
