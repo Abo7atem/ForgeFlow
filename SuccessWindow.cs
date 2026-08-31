@@ -10,7 +10,7 @@ namespace ForgeFlow
     {
         public bool OpenFolderRequested { get; private set; }
 
-        public SuccessWindow(string video60Path, string tikTok30Path)
+        public SuccessWindow(string video60Path, string tikTok60UltraPath, string tikTok30Path)
         {
             Title = "ForgeFlow Complete";
             NativeWindowTheme.Apply(this);
@@ -43,7 +43,7 @@ namespace ForgeFlow
             headerText.Children.Add(new TextBlock { Text = "تم إنشاء الملفات بنجاح", FontSize = 21, FontWeight = FontWeights.SemiBold });
             headerText.Children.Add(new TextBlock
             {
-                Text = "Video 60FPS و TikTok30FPS جاهزين.",
+                Text = "Video 60FPS و TikTok 60 Ultra و TikTok30FPS جاهزة.",
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166)),
                 Margin = new Thickness(0, 4, 0, 0)
             });
@@ -52,7 +52,7 @@ namespace ForgeFlow
 
             var outputBox = new TextBox
             {
-                Text = $"Video 60FPS: {video60Path}{Environment.NewLine}TikTok30FPS: {tikTok30Path}",
+                Text = $"Video 60FPS: {video60Path}{Environment.NewLine}TikTok 60 Ultra: {tikTok60UltraPath}{Environment.NewLine}TikTok30FPS: {tikTok30Path}",
                 IsReadOnly = true,
                 TextWrapping = TextWrapping.Wrap,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,

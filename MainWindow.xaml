@@ -394,7 +394,7 @@
                            FontSize="24"
                            FontWeight="SemiBold"
                            Foreground="#F5F5F7"/>
-                <TextBlock Text="Video 60FPS + TikTok30FPS"
+                <TextBlock Text="Video 60FPS + TikTok 60 Ultra + TikTok30FPS"
                            Foreground="#8E8E93"
                            FontSize="12"
                            Margin="1,3,0,0"/>
@@ -467,7 +467,7 @@
                        VerticalAlignment="Center"
                        Foreground="#8E8E93"/>
             <TextBox Grid.Column="1" x:Name="OutputTextBox" Height="34"
-                     ToolTip="ForgeFlow will create two files beside this path: *_Video 60FPS.mp4 and *_TikTok30FPS.mp4"/>
+                     ToolTip="ForgeFlow creates Video 60FPS, TikTok 60 Ultra, and patched TikTok30FPS exports."/>
             <Button Grid.Column="3" Content="اختيار"
                     Height="34" Click="BrowseOutput_Click"/>
         </Grid>
@@ -479,7 +479,7 @@
                            Foreground="#6E6E73"
                            FontSize="11"/>
                 <TextBlock x:Name="VideoInfoTextBlock"
-                           Text="Original size preserved | RIFE v4.26 | Two outputs only"
+                           Text="Original size preserved | RIFE v4.26 | Three optimized outputs"
                            Foreground="#6E6E73"
                            FontSize="11"
                            Margin="0,3,0,0"/>
@@ -1056,6 +1056,17 @@
         <StackPanel Grid.Row="12"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right">
+            <Button x:Name="TikTokUploadButton"
+                    Content="TikTok Upload"
+                    Background="#FE2C55"
+                    BorderBrush="#FE2C55"
+                    Foreground="White"
+                    FontWeight="SemiBold"
+                    MinWidth="132" Height="36"
+                    Padding="16,0"
+                    Margin="0,0,8,0"
+                    ToolTip="رفع الفيديو عبر Chrome الحقيقي وTikTok Studio"
+                    Click="TikTokUploadButton_Click"/>
             <Button x:Name="StartButton"
                     Content="Start"
                     Style="{StaticResource StartButtonStyle}"

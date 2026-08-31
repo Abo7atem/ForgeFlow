@@ -169,6 +169,26 @@ namespace ForgeFlow
             }
         }
 
+        private void TikTokUploadButton_Click(object sender, RoutedEventArgs e)
+        {
+            string? candidate = null;
+            string output = OutputTextBox.Text.Trim();
+            if (!string.IsNullOrWhiteSpace(output))
+            {
+                string[] expected = GetExpectedOutputPaths(output);
+                candidate = expected.Skip(1).FirstOrDefault(File.Exists) ?? expected.FirstOrDefault(File.Exists);
+            }
+
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                string input = InputTextBox.Text.Trim();
+                candidate = File.Exists(input) ? input : null;
+            }
+
+            var uploadWindow = new TikTokUploadWindow(candidate) { Owner = this };
+            uploadWindow.ShowDialog();
+        }
+
         private async void StartButton_Click(object sender, RoutedEventArgs e)
         {
             string input = InputTextBox.Text.Trim();
@@ -276,6 +296,7 @@ namespace ForgeFlow
                     // Outputs
                     GeneratePc60 = true,
                     GenerateTikTok30 = true,
+                    GenerateTikTok60Ultra = true,
 
                     // PC output
                     PcFps = 60,
@@ -295,6 +316,10 @@ namespace ForgeFlow
                     TikTokCrf = 15,
                     TikTokMaxRate = "50M",
                     TikTokBufSize = "100M",
+                    TikTok60UltraCrf = 12,
+                    TikTok60UltraMaxRate = "90M",
+                    TikTok60UltraBufSize = "180M",
+                    TikTok60UltraPreset = "veryslow",
 
                     // Pre-filter: disabled by default
                     EnablePreFilter = false,
@@ -355,7 +380,7 @@ namespace ForgeFlow
 
                 string[] produced = GetExpectedOutputPaths(output);
                 LoadInlineOutputPreview(produced.FirstOrDefault(File.Exists));
-                var successWindow = new SuccessWindow(produced[0], produced[1])
+                var successWindow = new SuccessWindow(produced[0], produced[1], produced[2])
                 {
                     Owner = this
                 };
@@ -1914,9 +1939,10 @@ namespace ForgeFlow
                 $"رفع الجودة: {GetSelectedUpscaleProfile().DisplayName}\n" +
                 $"{videoInfo}\n" +
                 $"{estimate}\n\n" +
-                "سيتم إنشاء ملفين:\n" +
+                "سيتم إنشاء ثلاثة ملفات:\n" +
                 "- " + Path.GetFileName(outputs[0]) + "\n" +
-                "- " + Path.GetFileName(outputs[1]) + "\n\n" +
+                "- " + Path.GetFileName(outputs[1]) + "\n" +
+                "- " + Path.GetFileName(outputs[2]) + "\n\n" +
                 "هل تريد بدء المعالجة؟";
 
             return MessageBox.Show(this, message, "Processing Summary", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
@@ -2106,6 +2132,7 @@ namespace ForgeFlow
             return new[]
             {
                 Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}"),
+                Path.Combine(outDir, $"{baseName}_TikTok60Ultra{ext}"),
                 Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}")
             };
         }
@@ -2437,7 +2464,7 @@ namespace ForgeFlow
             string hardwareHint = " | " + GetEffectiveHardwareModeDisplayName();
             string styleHint = " | " + GetSelectedVisualStyleDisplayName();
             OutputPreviewTextBlock.Text =
-                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + sizeHint + upscaleHint + motionHint + styleHint + hardwareHint;
+                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + " + " + Path.GetFileName(outputs[2]) + sizeHint + upscaleHint + motionHint + styleHint + hardwareHint;
             OutputPreviewTextBlock.Foreground = Brushes.LightGray;
         }
 
@@ -2820,6 +2847,7 @@ namespace ForgeFlow
                 || msg.StartsWith("NVDEC", StringComparison.Ordinal)
                 || msg.StartsWith("Selected:", StringComparison.Ordinal)
                 || msg.StartsWith("Video 60FPS:", StringComparison.Ordinal)
+                || msg.StartsWith("TikTok60Ultra:", StringComparison.Ordinal)
                 || msg.StartsWith("TikTok30FPS:", StringComparison.Ordinal)
                 || msg.StartsWith("ERROR:", StringComparison.Ordinal)
                 || msg.StartsWith("WARNING:", StringComparison.Ordinal)

@@ -80,6 +80,7 @@ namespace VideoProcessing
         // Outputs toggles
         public bool GeneratePc60 { get; set; } = true;
         public bool GenerateTikTok30 { get; set; } = true;
+        public bool GenerateTikTok60Ultra { get; set; } = true;
 
         // PC output (x264 CRF)
         public int PcFps { get; set; } = 60;
@@ -101,6 +102,13 @@ namespace VideoProcessing
 
         // Backward compatible: if set manually, takes priority over TikTokCrf/MaxRate/BufSize
         public string TikTokRateControl { get; set; } = "";
+
+        // TikTok 60 Ultra: a standards-compliant, upload-ready 59.94 FPS H.264 profile.
+        // Kept separate from the legacy patched-30 container so it can be uploaded directly.
+        public int TikTok60UltraCrf { get; set; } = 12;
+        public string TikTok60UltraMaxRate { get; set; } = "90M";
+        public string TikTok60UltraBufSize { get; set; } = "180M";
+        public string TikTok60UltraPreset { get; set; } = "veryslow";
 
         // Pre-filter input before frame extraction
         public bool EnablePreFilter { get; set; } = false;
@@ -214,6 +222,7 @@ namespace VideoProcessing
                 if (EnableUpscale) totalStages++;
                 if (EnableSubjectFocus && SubjectFocusMode != SubjectFocusMode.Off) totalStages++;
                 if (GeneratePc60) totalStages++;
+                if (GenerateTikTok60Ultra) totalStages++;
                 if (GenerateTikTok30) totalStages += 2;
 
                 int stageNumber = 1;
@@ -341,6 +350,7 @@ namespace VideoProcessing
                 if (string.IsNullOrWhiteSpace(ext)) ext = ".mp4";
 
                 string pcOut = Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}");
+                string tikTok60UltraOut = Path.Combine(outDir, $"{baseName}_TikTok60Ultra{ext}");
                 string tikTok30Temp = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_TEMP{ext}");
                 string tikTok30Out = Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}");
 
@@ -354,6 +364,17 @@ namespace VideoProcessing
                     var pcRes = await EncodePcWithFallbackAsync(pcOut, encodeFramesDir, workingFramePattern, workingSequenceFps, inputVideoPath, audioStartTime,
                         showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!pcRes.Success) return pcRes;
+                    progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
+                }
+
+                if (GenerateTikTok60Ultra)
+                {
+                    stageNumber++;
+                    stageRange = GetStageProgressRange(stageNumber, totalStages);
+                    progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding TikTok 60 Ultra");
+                    var ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraOut, encodeFramesDir, workingFramePattern, workingSequenceFps,
+                        inputVideoPath, audioStartTime, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
+                    if (!ultraRes.Success) return ultraRes;
                     progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
@@ -385,6 +406,7 @@ namespace VideoProcessing
                 var msg = new StringBuilder();
                 msg.AppendLine("Done.");
                 if (GeneratePc60) msg.AppendLine("Video 60FPS: " + pcOut);
+                if (GenerateTikTok60Ultra) msg.AppendLine("TikTok60Ultra: " + tikTok60UltraOut);
                 if (GenerateTikTok30) msg.AppendLine("TikTok30FPS: " + tikTok30Out);
 
                 return new ProcessExecutionResult(0, msg.ToString(), "");
@@ -629,6 +651,93 @@ namespace VideoProcessing
             args.Append(QuotePath(outputPath));
 
             return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory, CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "Video 60FPS"), ct).ConfigureAwait(false);
+        }
+
+        private string GetTikTok60UltraEncoderArgs(bool forceCpu)
+        {
+            int quality = Math.Clamp(TikTok60UltraCrf, 1, 30);
+            if (!forceCpu && UseNvidiaAcceleration)
+                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTok60UltraPreset)} -tune hq -profile:v high -pix_fmt yuv420p -rc vbr -cq {quality} -b:v 0 -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+
+            if (!forceCpu && UseAmdAcceleration)
+                return $"-c:v h264_amf -quality {MapAmfQuality(TikTok60UltraPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {quality} -qp_p {quality} -qp_b {Math.Min(quality + 2, 32)}";
+
+            return $"-c:v libx264 -preset {TikTok60UltraPreset} -tune film -profile:v high -level:v 5.1 -pix_fmt yuv420p -crf {quality} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+        }
+
+        private async Task<ProcessExecutionResult> EncodeTikTok60UltraAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double sourceSequenceFps,
+            string originalVideoPath,
+            double? audioOffset,
+            bool forceCpu,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
+        {
+            const string outputRate = "60000/1001";
+            const int keyint = 240;
+            string vf = FilterGraphMild() +
+                        $",scale=w='min(iw\\,4096)':h='min(ih\\,4096)':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos" +
+                        $",setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709,fps={outputRate}";
+
+            var args = new StringBuilder();
+            args.Append("-y -nostdin ");
+            args.Append($"-framerate {sourceSequenceFps.ToString(CultureInfo.InvariantCulture)} -i {QuotePath(Path.Combine(framesDir, pattern))} ");
+            if (audioOffset.HasValue && audioOffset.Value > 0)
+                args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
+            args.Append($"-i {QuotePath(originalVideoPath)} ");
+            args.Append("-map 0:v:0 -map 1:a:0? ");
+            args.Append($"-vf \"{vf}\" ");
+            args.Append(GetTikTok60UltraEncoderArgs(forceCpu) + " ");
+            args.Append($"-r {outputRate} -fps_mode cfr -g {keyint} -keyint_min {keyint} -sc_threshold 0 -bf 2 ");
+            args.Append("-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv ");
+            args.Append("-c:a aac -b:a 256k -ar 48000 ");
+            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -avoid_negative_ts make_zero ");
+            args.Append("-loglevel warning -progress pipe:1 -nostats ");
+            args.Append(QuotePath(outputPath));
+
+            return await RunProcessAsync(FfmpegExecutablePath, args.ToString(), showCmd, _tempSessionDirectory,
+                CreateTimedProgressCallback(cb, progressStart, progressEnd, durationSeconds, "TikTok 60 Ultra"), ct).ConfigureAwait(false);
+        }
+
+        private async Task<ProcessExecutionResult> EncodeTikTok60UltraWithFallbackAsync(
+            string outputPath,
+            string framesDir,
+            string pattern,
+            double sourceSequenceFps,
+            string originalVideoPath,
+            double? audioOffset,
+            bool showCmd,
+            Action<string>? cb,
+            CancellationToken ct,
+            double? durationSeconds,
+            int progressStart,
+            int progressEnd)
+        {
+            ProcessExecutionResult result = await EncodeTikTok60UltraAsync(outputPath, framesDir, pattern, sourceSequenceFps,
+                originalVideoPath, audioOffset, forceCpu: false, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
+            if (result.Success || (!UseNvidiaAcceleration && !UseAmdAcceleration))
+                return result;
+
+            string combined = (result.StandardError + "\n" + result.StandardOutput).ToLowerInvariant();
+            bool hardwareFailure = combined.Contains("no capable devices found") ||
+                                   combined.Contains("invalid argument") ||
+                                   combined.Contains("external library") ||
+                                   combined.Contains("device") ||
+                                   combined.Contains("nvenc") ||
+                                   combined.Contains("amf");
+            if (!hardwareFailure)
+                return result;
+
+            cb?.Invoke("WARNING: Hardware encoder failed for TikTok 60 Ultra. Falling back to CPU H.264.");
+            return await EncodeTikTok60UltraAsync(outputPath, framesDir, pattern, sourceSequenceFps, originalVideoPath,
+                audioOffset, forceCpu: true, showCmd, cb, ct, durationSeconds, progressStart, progressEnd).ConfigureAwait(false);
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTok120Async(
