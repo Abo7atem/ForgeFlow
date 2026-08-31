@@ -9,6 +9,7 @@
     <Compile Include="..\..\EditTimelineModel.cs" Link="EditTimelineModel.cs" />
     <Compile Include="..\..\EditorExportSettings.cs" Link="EditorExportSettings.cs" />
     <Compile Include="..\..\EditorExportService.cs" Link="EditorExportService.cs" />
+    <Compile Include="..\..\TikTokAudioDecoyPatcher.cs" Link="TikTokAudioDecoyPatcher.cs" />
     <Content Include="..\..\Tools\ffmpeg.exe" Link="Tools\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\Tools\ffprobe.exe" Link="Tools\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

@@ -317,9 +317,12 @@ namespace ForgeFlow
                     TikTokMaxRate = "50M",
                     TikTokBufSize = "100M",
                     TikTok60UltraCrf = 12,
-                    TikTok60UltraMaxRate = "90M",
-                    TikTok60UltraBufSize = "180M",
+                    TikTok60UltraBitrate = "24M",
+                    TikTok60UltraMaxRate = "24M",
+                    TikTok60UltraBufSize = "48M",
                     TikTok60UltraPreset = "veryslow",
+                    EnableTikTokAudioDecoy = true,
+                    TikTokAudioDecoyPacketMultiplier = 10,
 
                     // Pre-filter: disabled by default
                     EnablePreFilter = false,
@@ -1718,6 +1721,9 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "fast";
                     interpolator.TikTokMaxRate = "35M";
                     interpolator.TikTokBufSize = "70M";
+                    interpolator.TikTok60UltraBitrate = "15M";
+                    interpolator.TikTok60UltraMaxRate = "15M";
+                    interpolator.TikTok60UltraBufSize = "30M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "Quality":
@@ -1727,6 +1733,9 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "veryslow";
                     interpolator.TikTokMaxRate = "50M";
                     interpolator.TikTokBufSize = "100M";
+                    interpolator.TikTok60UltraBitrate = "24M";
+                    interpolator.TikTok60UltraMaxRate = "24M";
+                    interpolator.TikTok60UltraBufSize = "48M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "Aesthetic Vivid":
@@ -1736,6 +1745,9 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "veryslow";
                     interpolator.TikTokMaxRate = "70M";
                     interpolator.TikTokBufSize = "140M";
+                    interpolator.TikTok60UltraBitrate = "48M";
+                    interpolator.TikTok60UltraMaxRate = "48M";
+                    interpolator.TikTok60UltraBufSize = "96M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 default:
@@ -1745,6 +1757,9 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "slow";
                     interpolator.TikTokMaxRate = "42M";
                     interpolator.TikTokBufSize = "84M";
+                    interpolator.TikTok60UltraBitrate = "15M";
+                    interpolator.TikTok60UltraMaxRate = "15M";
+                    interpolator.TikTok60UltraBufSize = "30M";
                     interpolator.PngCompressionLevel = 1;
                     break;
             }

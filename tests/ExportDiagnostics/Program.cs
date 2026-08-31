@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using ForgeFlow;
+using VideoProcessing;
 
 string root = Path.Combine(Path.GetTempPath(), "ForgeFlowExportDiagnostics");
 Directory.CreateDirectory(root);
@@ -9,6 +10,8 @@ string source = Path.Combine(root, "source.mp4");
 string logo = Path.Combine(root, "logo.png");
 string output = Path.Combine(root, "editor-smoke.mp4");
 string customOutput = Path.Combine(root, "editor-custom-export.mp4");
+string decoyBase = Path.Combine(root, "tiktok-decoy-base.mp4");
+string decoyOutput = Path.Combine(root, "tiktok-decoy-patched.mp4");
 
 Run(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", source);
 Run(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=orange:s=160x90", "-frames:v", "1", logo);
@@ -65,6 +68,22 @@ string audioProbe = Capture(ffprobe, "-v", "error", "-select_streams", "a", "-sh
 if (audioProbe.Length != 0) throw new InvalidOperationException("Audio was present although IncludeAudio=false.");
 Console.WriteLine("PASS  custom bitrate/resolution/fps/codec/pixel format/no-audio export settings");
 Console.WriteLine(customOutput);
+
+Run(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+    "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0",
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", decoyBase);
+TikTokAudioDecoyPatcher.PatchResult decoyResult = TikTokAudioDecoyPatcher.Patch(decoyBase, decoyOutput, 10);
+if (!decoyResult.Applied || decoyResult.DecoySamples != decoyResult.OriginalSamples * 9)
+    throw new InvalidOperationException("TikTok audio decoy was not applied: " + decoyResult.Message);
+string decoyStreams = Capture(ffprobe, "-v", "error", "-show_entries", "stream=index,codec_type", "-of", "csv=p=0", decoyOutput);
+if (decoyStreams.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(line => line.Contains("audio", StringComparison.Ordinal)) != 2)
+    throw new InvalidOperationException("TikTok decoy output did not retain two audio tracks:\n" + decoyStreams);
+string decoyPackets = Capture(ffprobe, "-v", "error", "-select_streams", "a:1", "-show_entries", "stream=nb_frames", "-of", "csv=p=0", decoyOutput).Trim();
+if (!int.TryParse(decoyPackets, out int packetCount) || packetCount != decoyResult.OriginalSamples + decoyResult.DecoySamples)
+    throw new InvalidOperationException($"Unexpected TikTok decoy sample-table count: {decoyPackets}");
+Run(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", decoyOutput, "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "NUL");
+Console.WriteLine("PASS  upload-only TikTok audio compatibility track with intact primary A/V");
+Console.WriteLine(decoyOutput);
 
 static void Run(string file, params string[] args)
 {

@@ -122,7 +122,7 @@ namespace ForgeFlow
                 Margin = new Thickness(0, 18, 0, 14),
                 Child = new TextBlock
                 {
-                    Text = "أول مرة: اضغط «تسجيل الدخول» لفتح Chrome عاديًا يقبل Google، سجّل دخول TikTok ثم أغلق نافذة Chrome بالكامل. بعد ذلك اختر الفيديو واضغط «رفع عبر Chrome». سيبدأ الرفع وتبقى مراجعة الغلاف والخصوصية وزر «نشر» داخل TikTok Studio.",
+                    Text = "أول مرة: اضغط «تسجيل الدخول»، سجّل دخول TikTok ثم أغلق Chrome بالكامل. ارفع ملف TikTok60Ultra وانشره Private أولًا حتى تنتهي المعالجة، ثم حوّله إلى عام. لا تضف صوتًا من مكتبة TikTok لأن ذلك يعيد ترميز الفيديو؛ استخدم صوت المقطع الأصلي. قد تبدأ المعاينة 720p ثم ترتفع بعد اكتمال المعالجة.",
                     Foreground = Brush("#D4D4D8"),
                     TextWrapping = TextWrapping.Wrap,
                     FlowDirection = FlowDirection.RightToLeft,

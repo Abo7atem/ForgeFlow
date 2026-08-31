@@ -106,9 +106,12 @@ namespace VideoProcessing
         // TikTok 60 Ultra: a standards-compliant, upload-ready 59.94 FPS H.264 profile.
         // Kept separate from the legacy patched-30 container so it can be uploaded directly.
         public int TikTok60UltraCrf { get; set; } = 12;
-        public string TikTok60UltraMaxRate { get; set; } = "90M";
-        public string TikTok60UltraBufSize { get; set; } = "180M";
+        public string TikTok60UltraBitrate { get; set; } = "24M";
+        public string TikTok60UltraMaxRate { get; set; } = "24M";
+        public string TikTok60UltraBufSize { get; set; } = "48M";
         public string TikTok60UltraPreset { get; set; } = "veryslow";
+        public bool EnableTikTokAudioDecoy { get; set; } = true;
+        public int TikTokAudioDecoyPacketMultiplier { get; set; } = 10;
 
         // Pre-filter input before frame extraction
         public bool EnablePreFilter { get; set; } = false;
@@ -350,7 +353,10 @@ namespace VideoProcessing
                 if (string.IsNullOrWhiteSpace(ext)) ext = ".mp4";
 
                 string pcOut = Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}");
-                string tikTok60UltraOut = Path.Combine(outDir, $"{baseName}_TikTok60Ultra{ext}");
+                string tikTok60UltraOut = Path.Combine(outDir, $"{baseName}_TikTok60Ultra.mp4");
+                string tikTok60UltraTemp = EnableTikTokAudioDecoy
+                    ? Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok60Ultra_CLEAN_TEMP.mp4")
+                    : tikTok60UltraOut;
                 string tikTok30Temp = Path.Combine(_tempSessionDirectory, $"{baseName}_TikTok30_TEMP{ext}");
                 string tikTok30Out = Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}");
 
@@ -372,9 +378,26 @@ namespace VideoProcessing
                     stageNumber++;
                     stageRange = GetStageProgressRange(stageNumber, totalStages);
                     progressCallback?.Invoke($"STAGE:{stageNumber}/{totalStages} Encoding TikTok 60 Ultra");
-                    var ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraOut, encodeFramesDir, workingFramePattern, workingSequenceFps,
+                    progressCallback?.Invoke($"TikTok 60 Ultra profile: {TikTok60UltraBitrate} target / {TikTok60UltraMaxRate} max, 59.94 FPS, H.264 High.");
+                    var ultraRes = await EncodeTikTok60UltraWithFallbackAsync(tikTok60UltraTemp, encodeFramesDir, workingFramePattern, workingSequenceFps,
                         inputVideoPath, audioStartTime, showConsoleWindows, progressCallback, cancellationToken, durationSeconds, stageRange.Start, stageRange.End).ConfigureAwait(false);
                     if (!ultraRes.Success) return ultraRes;
+                    if (EnableTikTokAudioDecoy)
+                    {
+                        try
+                        {
+                            TikTokAudioDecoyPatcher.PatchResult patch = TikTokAudioDecoyPatcher.Patch(
+                                tikTok60UltraTemp,
+                                tikTok60UltraOut,
+                                Math.Clamp(TikTokAudioDecoyPacketMultiplier, 2, 20));
+                            progressCallback?.Invoke(patch.Message);
+                        }
+                        catch (Exception ex)
+                        {
+                            File.Copy(tikTok60UltraTemp, tikTok60UltraOut, true);
+                            progressCallback?.Invoke("WARNING: TikTok audio compatibility patch was skipped: " + ex.Message);
+                        }
+                    }
                     progressCallback?.Invoke($"PROGRESS:{stageRange.End}%");
                 }
 
@@ -657,12 +680,12 @@ namespace VideoProcessing
         {
             int quality = Math.Clamp(TikTok60UltraCrf, 1, 30);
             if (!forceCpu && UseNvidiaAcceleration)
-                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTok60UltraPreset)} -tune hq -profile:v high -pix_fmt yuv420p -rc vbr -cq {quality} -b:v 0 -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+                return $"-c:v h264_nvenc -preset {MapNvencPreset(TikTok60UltraPreset)} -tune hq -profile:v high -pix_fmt yuv420p -rc vbr -multipass fullres -cq {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
 
             if (!forceCpu && UseAmdAcceleration)
-                return $"-c:v h264_amf -quality {MapAmfQuality(TikTok60UltraPreset)} -profile:v high -pix_fmt yuv420p -rc cqp -qp_i {quality} -qp_p {quality} -qp_b {Math.Min(quality + 2, 32)}";
+                return $"-c:v h264_amf -quality {MapAmfQuality(TikTok60UltraPreset)} -profile:v high -pix_fmt yuv420p -rc hqvbr -qvbr_quality_level {quality} -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
 
-            return $"-c:v libx264 -preset {TikTok60UltraPreset} -tune film -profile:v high -level:v 5.1 -pix_fmt yuv420p -crf {quality} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
+            return $"-c:v libx264 -preset {TikTok60UltraPreset} -tune film -profile:v high -level:v 5.1 -pix_fmt yuv420p -b:v {TikTok60UltraBitrate} -maxrate {TikTok60UltraMaxRate} -bufsize {TikTok60UltraBufSize}";
         }
 
         private async Task<ProcessExecutionResult> EncodeTikTok60UltraAsync(
@@ -693,12 +716,15 @@ namespace VideoProcessing
                 args.Append($"-itsoffset {audioOffset.Value.ToString(CultureInfo.InvariantCulture)} ");
             args.Append($"-i {QuotePath(originalVideoPath)} ");
             args.Append("-map 0:v:0 -map 1:a:0? ");
+            if (EnableTikTokAudioDecoy) args.Append("-map 1:a:0? ");
             args.Append($"-vf \"{vf}\" ");
             args.Append(GetTikTok60UltraEncoderArgs(forceCpu) + " ");
             args.Append($"-r {outputRate} -fps_mode cfr -g {keyint} -keyint_min {keyint} -sc_threshold 0 -bf 2 ");
             args.Append("-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv ");
             args.Append("-c:a aac -b:a 256k -ar 48000 ");
-            args.Append("-map_metadata -1 -map_chapters -1 -movflags +faststart -avoid_negative_ts make_zero ");
+            if (EnableTikTokAudioDecoy)
+                args.Append("-disposition:a:0 default -disposition:a:1 0 -metadata:s:a:0 title=Main -metadata:s:a:1 title=TikTokCompatibility ");
+            args.Append("-map_metadata -1 -map_chapters -1 -avoid_negative_ts make_zero ");
             args.Append("-loglevel warning -progress pipe:1 -nostats ");
             args.Append(QuotePath(outputPath));
 
