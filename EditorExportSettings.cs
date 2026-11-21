@@ -22,8 +22,8 @@ namespace ForgeFlow
         public int AudioBitrateKbps { get; set; } = 192;
         public bool FastStart { get; set; } = true;
 
-        public bool IsHardwareEncoder => VideoEncoder is "h264_nvenc" or "hevc_nvenc";
-        public bool IsHevc => VideoEncoder is "libx265" or "hevc_nvenc";
+        public bool IsHardwareEncoder => VideoEncoder is "h264_nvenc" or "hevc_nvenc" or "h264_amf" or "hevc_amf";
+        public bool IsHevc => VideoEncoder is "libx265" or "hevc_nvenc" or "hevc_amf";
         public bool IsBitrateMode => string.Equals(RateControl, "bitrate", StringComparison.OrdinalIgnoreCase);
 
         public EditorExportSettings Clone() => (EditorExportSettings)MemberwiseClone();
@@ -33,7 +33,7 @@ namespace ForgeFlow
             Width = MakeEven(Math.Clamp(Width, 64, 7680));
             Height = MakeEven(Math.Clamp(Height, 64, 4320));
             FrameRate = Math.Clamp(FrameRate, 15, 120);
-            if (VideoEncoder is not ("libx264" or "libx265" or "h264_nvenc" or "hevc_nvenc")) VideoEncoder = "libx264";
+            if (VideoEncoder is not ("libx264" or "libx265" or "h264_nvenc" or "hevc_nvenc" or "h264_amf" or "hevc_amf")) VideoEncoder = "libx264";
             RateControl = IsBitrateMode ? "bitrate" : "quality";
             VideoBitrateMbps = Math.Clamp(VideoBitrateMbps, 0.5, 300);
             MaxBitrateMbps = Math.Clamp(Math.Max(MaxBitrateMbps, VideoBitrateMbps), VideoBitrateMbps, 400);
@@ -89,16 +89,27 @@ namespace ForgeFlow
 
         public void Save()
         {
+            string? tempPath = null;
             try
             {
                 Normalize();
                 string? directory = Path.GetDirectoryName(SettingsPath);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                tempPath = SettingsPath + ".tmp." + Environment.ProcessId;
+                File.WriteAllText(tempPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                File.Move(tempPath, SettingsPath, true);
             }
             catch
             {
                 // Export must not fail because preferences could not be persisted.
+            }
+            finally
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath)) File.Delete(tempPath);
+                }
+                catch { }
             }
         }
 

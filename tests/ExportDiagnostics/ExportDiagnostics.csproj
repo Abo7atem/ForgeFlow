@@ -7,9 +7,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\EditTimelineModel.cs" Link="EditTimelineModel.cs" />
+    <Compile Include="..\..\SubtitleService.cs" Link="SubtitleService.cs" />
     <Compile Include="..\..\EditorExportSettings.cs" Link="EditorExportSettings.cs" />
     <Compile Include="..\..\EditorExportService.cs" Link="EditorExportService.cs" />
     <Compile Include="..\..\TikTokAudioDecoyPatcher.cs" Link="TikTokAudioDecoyPatcher.cs" />
+    <Compile Include="..\..\TikTokVideoInflatePatcher.cs" Link="TikTokVideoInflatePatcher.cs" />
+    <Compile Include="..\..\TikTokWebSignalPatcher.cs" Link="TikTokWebSignalPatcher.cs" />
     <Content Include="..\..\Tools\ffmpeg.exe" Link="Tools\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\Tools\ffprobe.exe" Link="Tools\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

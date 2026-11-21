@@ -6,14 +6,22 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>..\..\Assets\ForgeFlow.ico</ApplicationIcon>
-    <AssemblyName>ForgeFlow_Lite_Setup_1.2.0</AssemblyName>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0.0</FileVersion>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <AssemblyName>ForgeFlow_Lite_Setup_1.2.1</AssemblyName>
+    <Version>1.2.1</Version>
+    <FileVersion>1.2.1.0</FileVersion>
+    <AssemblyVersion>1.2.1.0</AssemblyVersion>
+    <PayloadPath>$(MSBuildProjectDirectory)\..\..\artifacts\installer\staging\payload.zip</PayloadPath>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="..\..\Assets\ForgeFlow.ico" Link="ForgeFlow.ico" />
-    <EmbeddedResource Include="..\..\artifacts\installer\staging\payload.zip" LogicalName="payload.zip" />
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="payload.zip" />
   </ItemGroup>
+
+  <!-- Fail early with an actionable message instead of the opaque CS1566
+       error when the release staging payload has not been assembled yet. -->
+  <Target Name="ValidateInstallerPayload" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(PayloadPath)')"
+           Text="ForgeFlow installer payload is missing: $(PayloadPath). Build/publish the application payload first; this project intentionally does not create customer packages automatically." />
+  </Target>
 </Project>

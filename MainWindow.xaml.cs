@@ -1,4 +1,4 @@
-﻿using Microsoft.Win32;
+using Microsoft.Win32;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -28,6 +28,11 @@ namespace ForgeFlow
             public string ModelDirectoryName { get; init; } = "";
             public string ModelName { get; init; } = "";
             public int Scale { get; init; } = 1;
+            public string PythonPath { get; init; } = "";
+            public string ScriptPath { get; init; } = "";
+            public string RuntimePath { get; init; } = "";
+            public string Quality { get; init; } = "";
+            public NanoVsrExecutionBackend NanoVsrBackend { get; init; } = NanoVsrExecutionBackend.DirectML;
             public override string ToString() => DisplayName;
         }
 
@@ -43,7 +48,6 @@ namespace ForgeFlow
         private CancellationTokenSource? _cts;
         private string? _lastInput;
         private string? _lastOutput;
-        private readonly LicenseManager _licenseManager;
         private readonly LicenseGuard _licenseGuard;
         private readonly UpdateChecker _updateChecker;
         private readonly AppSettings _settings;
@@ -72,8 +76,7 @@ namespace ForgeFlow
         {
             InitializeComponent();
             NativeWindowTheme.Apply(this);
-            _licenseManager = new LicenseManager();
-            _licenseGuard = new LicenseGuard(_licenseManager);
+            _licenseGuard = new LicenseGuard();
             _updateChecker = new UpdateChecker();
             _settings = AppSettings.Load();
             _runnerTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(170) };
@@ -91,7 +94,6 @@ namespace ForgeFlow
                 RefreshActionButtons();
             };
             StartButton.IsEnabled = false;
-            ActivationButton.IsEnabled = false;
             Glitch30Button.IsEnabled = false;
             CompletionSoundCheckBox.IsChecked = _settings.PlayCompletionSound;
             SummaryCheckBox.IsChecked = _settings.ShowProcessingSummary;
@@ -102,6 +104,10 @@ namespace ForgeFlow
             SubjectFocusStrengthSlider.Value = Math.Clamp(_settings.SubjectFocusStrength, 0, 100);
             SelectComboItemByTag(VisualStyleComboBox, string.IsNullOrWhiteSpace(_settings.VisualStyle) ? "natural" : _settings.VisualStyle);
             VisualStyleStrengthSlider.Value = Math.Clamp(_settings.VisualStyleStrength, 0, 100);
+            SelectComboItemByTag(TikTokProfileComboBox, string.IsNullOrWhiteSpace(_settings.TikTokProfile) ? "safe" : _settings.TikTokProfile);
+            SelectComboItemByTag(TikTokBitrateComboBox, Math.Clamp(_settings.TikTokBitrateMbps, 25, 120).ToString());
+            SelectComboItemByTag(TikTokAudioComboBox, Math.Clamp(_settings.TikTokAudioKbps, 192, 320).ToString());
+            SelectComboItemByTag(FourKBitrateComboBox, Math.Clamp(_settings.FourKBitrateMbps, 80, 250).ToString());
             LoadUpscaleProfiles();
             ToolsStatusTextBlock.Text = "Running startup checks...";
             ToolsStatusTextBlock.Foreground = Brushes.Goldenrod;
@@ -116,11 +122,8 @@ namespace ForgeFlow
             RefreshOutputPreview();
             _uiInitialized = true;
             ApplyPlanRestrictionsToUi(showMessage: false);
+            RefreshWorkflowRecommendation();
             RefreshStartHint();
-
-            string? tamperMessage = _licenseManager.CheckForDateTamper();
-            if (!string.IsNullOrWhiteSpace(tamperMessage))
-                MessageBox.Show(this, tamperMessage, "License Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
 
             Loaded += async (_, _) =>
             {
@@ -176,7 +179,11 @@ namespace ForgeFlow
             if (!string.IsNullOrWhiteSpace(output))
             {
                 string[] expected = GetExpectedOutputPaths(output);
-                candidate = expected.Skip(1).FirstOrDefault(File.Exists) ?? expected.FirstOrDefault(File.Exists);
+                // Output order: 60FPS, 4K Ultra, TikTok60Ultra, TikTok30FPS.
+                // Upload must prefer the TikTok-ready file, never the local 4K master.
+                candidate = expected.ElementAtOrDefault(2) is string tiktok && File.Exists(tiktok)
+                    ? tiktok
+                    : expected.FirstOrDefault(File.Exists);
             }
 
             if (string.IsNullOrWhiteSpace(candidate))
@@ -185,8 +192,69 @@ namespace ForgeFlow
                 candidate = File.Exists(input) ? input : null;
             }
 
+            // After restarting the app the input/output fields may be empty even though the
+            // last ForgeFlow export is still available. Offer the newest generated Ultra file
+            // instead of opening an empty upload dialog.
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                string directory = GetSuggestedOutputDirectory();
+                if (Directory.Exists(directory))
+                {
+                    candidate = Directory.GetFiles(directory, "*_TikTok60Ultra.mp4", SearchOption.TopDirectoryOnly)
+                        .Select(path => new FileInfo(path))
+                        .OrderByDescending(file => file.LastWriteTimeUtc)
+                        .FirstOrDefault()?.FullName;
+                }
+            }
+
             var uploadWindow = new TikTokUploadWindow(candidate) { Owner = this };
             uploadWindow.ShowDialog();
+        }
+
+        private string GetSelectedTikTokProfile()
+        {
+            return (TikTokProfileComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString()?.Trim().ToLowerInvariant() ?? "safe";
+        }
+
+        private int GetSelectedTikTokBitrateMbps()
+        {
+            string raw = (TikTokBitrateComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "35";
+            return int.TryParse(raw, out int value) ? Math.Clamp(value, 25, 120) : 35;
+        }
+
+        private int GetSelectedTikTokAudioKbps()
+        {
+            string raw = (TikTokAudioComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "256";
+            return int.TryParse(raw, out int value) ? Math.Clamp(value, 192, 320) : 256;
+        }
+
+        private int GetSelectedFourKBitrateMbps()
+        {
+            string raw = (FourKBitrateComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "150";
+            return int.TryParse(raw, out int value) ? Math.Clamp(value, 80, 250) : 150;
+        }
+
+        private void FourKBitrateComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_uiInitialized || FourKBitrateComboBox.SelectedItem == null) return;
+            _settings.FourKBitrateMbps = GetSelectedFourKBitrateMbps();
+            _settings.Save();
+            RefreshOutputPreview();
+        }
+
+        private void OutputSelectionChanged(object sender, RoutedEventArgs e)
+        {
+            if (!_uiInitialized) return;
+            RefreshOutputPreview();
+            RefreshActionButtons();
+        }
+
+        private void SaveTikTokEncodingSettings()
+        {
+            _settings.TikTokProfile = GetSelectedTikTokProfile();
+            _settings.TikTokBitrateMbps = GetSelectedTikTokBitrateMbps();
+            _settings.TikTokAudioKbps = GetSelectedTikTokAudioKbps();
+            _settings.Save();
         }
 
         private async void StartButton_Click(object sender, RoutedEventArgs e)
@@ -210,6 +278,13 @@ namespace ForgeFlow
             if (string.IsNullOrWhiteSpace(output))
             {
                 FailUI("حدد مسار الإخراج.");
+                return;
+            }
+
+            if (GeneratePc60CheckBox?.IsChecked != true && Generate4KCheckBox?.IsChecked != true &&
+                GenerateTikTok60CheckBox?.IsChecked != true && GenerateTikTok30CheckBox?.IsChecked != true)
+            {
+                FailUI("اختر مخرجًا واحدًا على الأقل من مجموعة المخرجات.");
                 return;
             }
 
@@ -241,17 +316,6 @@ namespace ForgeFlow
             if (!await EnsureUpdateGateAsync())
                 return;
 
-            if (IsFreePlan() && GetRemainingFreeExports() <= 0)
-            {
-                MessageBox.Show(
-                    this,
-                    $"Trial ended. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts only. Activate a license to continue.\n\nانتهت التجربة. يسمح ForgeFlow بـ {TrialManager.MaxTrialVideos} محاولات معالجة فقط. فعّل الترخيص للمتابعة.",
-                    "Trial Ended | انتهت التجربة",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return;
-            }
-
             if (!EnsureAccessBeforeProcessing())
                 return;
 
@@ -276,16 +340,70 @@ namespace ForgeFlow
 
             try
             {
+                // The input-selection probe is asynchronous. If the user
+                // starts immediately after choosing a file, the dimensions
+                // may not have arrived yet and NanoVSR safety normalization
+                // would otherwise be skipped. Resolve the metadata once more
+                // at the processing boundary so an oversized x4 selection is
+                // switched to a safe x2 profile before frame extraction.
+                await EnsureSelectedVideoInfoForProcessingAsync(input, tools.FfprobePath, _cts.Token);
+
                 if (!AdvanceLicenseCheckpoint(guardSession, "preflight")) return;
 
                 if (!AdvanceLicenseCheckpoint(guardSession, "tools-verified")) return;
 
+                HardwareCapabilityReport hardwareReport = await HardwareCapabilityProbe.ProbeAsync(
+                    tools.FfmpegPath, tools.RifePath, _cts.Token);
+                AppendLog(hardwareReport.Summary);
+                if (IsRifeEnabled() && !hardwareReport.Vulkan)
+                {
+                    FailUI("تعذر تشغيل RIFE: لم يتم العثور على جهاز Vulkan قابل للتشغيل.\n\nأوقف RIFE أو حدّث تعريف كرت الشاشة ثم أعد المحاولة.");
+                    RetryButton.IsEnabled = true;
+                    return;
+                }
+
+                SaveTikTokEncodingSettings();
+                _settings.FourKBitrateMbps = GetSelectedFourKBitrateMbps();
+                _settings.Save();
+                string tikTokProfile = GetSelectedTikTokProfile();
+                int tikTokBitrate = GetSelectedTikTokBitrateMbps();
+                int tikTokAudioKbps = GetSelectedTikTokAudioKbps();
+                int fourKBitrate = GetSelectedFourKBitrateMbps();
+                bool webSignalProfile = string.Equals(tikTokProfile, "websignal", StringComparison.OrdinalIgnoreCase);
+                bool legacyTikTokPatch = string.Equals(tikTokProfile, "patch", StringComparison.OrdinalIgnoreCase);
+                bool experimentalTikTokPatch = webSignalProfile || legacyTikTokPatch;
+                bool highBitrateProfile = string.Equals(tikTokProfile, "high", StringComparison.OrdinalIgnoreCase)
+                                           || experimentalTikTokPatch;
+                // The profile selects encoding policy; the bitrate selector is always
+                // respected so advanced users can tune the upload size explicitly.
+                int targetBitrate = tikTokBitrate;
+                // Keep the UI choice authoritative.  The 70 Mbps Studio tier
+                // intentionally has a 120 Mbps VBV ceiling for high-motion
+                // gameplay; capping it at 85 Mbps was silently starving the
+                // encoder during scene changes.
+                int maxBitrate = targetBitrate switch
+                {
+                    120 => 150,
+                    70 => 120,
+                    50 => 80,
+                    35 => 50,
+                    _ => Math.Clamp(targetBitrate + 15, 40, 60)
+                };
+
+                if (webSignalProfile)
+                    AppendLog("TikTok Web Signal: ON — neutral edit-list + metadata marker; timing and source pixels are unchanged.");
+                else if (legacyTikTokPatch)
+                    AppendLog("TikTok Legacy Metadata Patch: ON — sample-table compatibility experiment; source pixels are preserved.");
+                else if (string.Equals(tikTokProfile, "safe", StringComparison.OrdinalIgnoreCase))
+                    AppendLog("TikTok Safe H.264: upload signals are OFF. The local file will not look sharper; select Web Signal for the new TikTok Web experiment.");
+
                 var interpolator = new VideoInterpolator(tools.RifePath, tools.FfmpegPath, tools.FfprobePath)
                 {
-                    // RIFE — FIX: use "0" for RTX 5070 instead of "auto"
+                    // The actual Vulkan device is selected by the capability
+                    // probe instead of assuming device 0 on every machine.
                     RifeModelName = "rife-v4.26",
                     RifeThreads = "1:2:2",
-                    RifeGpuId = "0",
+                    RifeGpuId = hardwareReport.Vulkan ? hardwareReport.VulkanDeviceId.ToString() : "auto",
                     RifeEnableSpatialTta = false,
                     RifeEnableUhdMode = false,
 
@@ -294,13 +412,22 @@ namespace ForgeFlow
                     PngCompressionLevel = 1,
 
                     // Outputs
-                    GeneratePc60 = true,
-                    GenerateTikTok30 = true,
-                    GenerateTikTok60Ultra = true,
+                    GeneratePc60 = GeneratePc60CheckBox?.IsChecked == true,
+                    Generate4K = Generate4KCheckBox?.IsChecked == true,
+                    GenerateTikTok30 = GenerateTikTok30CheckBox?.IsChecked == true,
+                    GenerateTikTok60Ultra = GenerateTikTok60CheckBox?.IsChecked == true,
+                    FourKBitrate = fourKBitrate + "M",
+                    FourKMaxRate = Math.Clamp((int)Math.Round(fourKBitrate * 1.33), fourKBitrate + 10, 330) + "M",
+                    FourKBufSize = Math.Clamp(fourKBitrate * 2, fourKBitrate + 20, 500) + "M",
+                    FourKCrf = 12,
+                    FourKAudioKbps = 320,
 
                     // PC output
                     PcFps = 60,
                     PcCrf = 13,
+                    PcBitrate = targetBitrate + "M",
+                    PcMaxRate = maxBitrate + "M",
+                    PcBufSize = (maxBitrate * 2) + "M",
                     PcPreset = "veryslow",
                     PcTune = "film",
                     PcKeyintSeconds = 1,
@@ -314,16 +441,24 @@ namespace ForgeFlow
 
                     // FIX: set CRF via dedicated properties — no manual TikTokRateControl string
                     TikTokCrf = 15,
-                    TikTokMaxRate = "50M",
-                    TikTokBufSize = "100M",
-                    TikTok60UltraCrf = 12,
-                    TikTok60UltraBitrate = "24M",
-                    TikTok60UltraMaxRate = "24M",
-                    TikTok60UltraBufSize = "48M",
+                    TikTokTargetBitrate = targetBitrate + "M",
+                    TikTokMaxRate = maxBitrate + "M",
+                    TikTokBufSize = (maxBitrate * 2) + "M",
+                    TikTok60UltraCrf = highBitrateProfile ? 14 : 15,
+                    TikTok60UltraBitrate = targetBitrate + "M",
+                    TikTok60UltraMaxRate = maxBitrate + "M",
+                    TikTok60UltraBufSize = (maxBitrate * 2) + "M",
                     TikTok60UltraPreset = "veryslow",
-                    EnableTikTokAudioDecoy = true,
+                    TikTok60UltraAudioKbps = tikTokAudioKbps,
+                    EnableTikTokAudioDecoy = legacyTikTokPatch,
                     TikTokAudioDecoyPacketMultiplier = 10,
-                    EnableTikTokTurboCopy = true,
+                    EnableTikTokVideoInflate = legacyTikTokPatch,
+                    TikTokVideoInflateMultiplier = 10,
+                    TikTokVideoPatchMode = webSignalProfile ? "web-signal" : "legacy-inflate",
+                    // The metadata patch is most effective on a native compliant 60-fps
+                    // bitstream, so allow Turbo Copy for it when the source is eligible.
+                    EnableTikTokTurboCopy = !highBitrateProfile || experimentalTikTokPatch,
+                    AudioArgs = $"-c:a aac -b:a {tikTokAudioKbps}k -ar 48000 -ac 2",
 
                     // Pre-filter: disabled by default
                     EnablePreFilter = false,
@@ -341,9 +476,19 @@ namespace ForgeFlow
                     VerboseLogging = false
                 };
                 ApplySelectedPreset(interpolator);
+                // Presets provide codec defaults, but the explicit bitrate
+                // selector is authoritative and must apply equally to the
+                // 30fps patched output, 60fps Ultra output, and PC 60fps.
+                interpolator.PcBitrate = targetBitrate + "M";
+                interpolator.PcMaxRate = maxBitrate + "M";
+                interpolator.PcBufSize = (maxBitrate * 2) + "M";
+                interpolator.TikTokTargetBitrate = targetBitrate + "M";
+                interpolator.TikTokMaxRate = maxBitrate + "M";
+                interpolator.TikTokBufSize = (maxBitrate * 2) + "M";
                 ApplySelectedVisualStyle(interpolator);
                 ApplySelectedHardwareMode(interpolator);
                 ApplySelectedMotion(interpolator);
+                NormalizeUpscaleForSourceResolution();
                 ApplySelectedUpscaleProfile(interpolator);
                 ApplySelectedSubjectFocus(interpolator);
 
@@ -355,7 +500,10 @@ namespace ForgeFlow
                 AppendLog("Pipeline: " + GetSelectedProcessingOrderDisplayName());
                 AppendLog($"Visual style: {GetSelectedVisualStyleDisplayName()} ({GetSelectedVisualStyleStrengthPercent()}%)");
                 AppendLog("Quality boost: " + GetSelectedUpscaleProfile().DisplayName);
+                int fourKMax = Math.Clamp((int)Math.Round(fourKBitrate * 1.33), fourKBitrate + 10, 330);
+                AppendLog($"4K Ultra: {(interpolator.Generate4K ? "ON" : "OFF")} | target {fourKBitrate} Mbps / max {fourKMax} Mbps | HEVC master");
                 AppendLog($"Subject focus: {GetSelectedSubjectFocusDisplayName()} ({GetSelectedSubjectFocusStrengthPercent()}%)");
+                AppendLog($"TikTok profile: {tikTokProfile} | video {targetBitrate} Mbps (max {maxBitrate} Mbps) | AAC {tikTokAudioKbps} kbps @ 48 kHz");
                 if (!AdvanceLicenseCheckpoint(guardSession, "processing-started")) return;
 
                 var res = await interpolator.InterpolateVideoAsync(
@@ -372,6 +520,17 @@ namespace ForgeFlow
                     RetryButton.IsEnabled = true;
                     return;
                 }
+
+                AppendLog("Quality boost result: " + interpolator.LastQualityBoostStatus);
+                if (string.Equals(interpolator.LastQualityBoostStatus, "skipped-tensorrt", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastQualityBoostStatus, "skipped-safe-limit", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastQualityBoostStatus, "skipped-nanovsr", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastQualityBoostStatus, "skipped-upscale", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastMotionStatus, "skipped-rife", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastNvidiaVfxStatus, "skipped-vfx", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastPreFilterStatus, "skipped-prefilter", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(interpolator.LastSubjectFocusStatus, "skipped-subject", StringComparison.OrdinalIgnoreCase))
+                    AppendLog("WARNING: An optional AI/motion stage was skipped after a runtime/driver failure; the output was completed from the safest available frames.");
 
                 if (!AdvanceLicenseCheckpoint(guardSession, "outputs-created")) return;
                 AppendLog(res.StandardOutput);
@@ -543,8 +702,20 @@ namespace ForgeFlow
                 CreateNoWindow = true
             };
             using var process = new Process { StartInfo = startInfo };
-            process.Start();
+            if (!process.Start())
+                throw new InvalidOperationException("تعذر تشغيل FFmpeg الخاص بـ Glitch 30.");
+            using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch { }
+            });
+            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
+            await Task.WhenAll(stdoutTask, stderrTask);
             return process.ExitCode;
         }
 
@@ -576,14 +747,6 @@ namespace ForgeFlow
             catch
             {
             }
-        }
-
-        private async void ActivationButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (!await EnsureUpdateGateAsync())
-                return;
-
-            OpenActivationWindow();
         }
 
         private async void UpdateButton_Click(object sender, RoutedEventArgs e)
@@ -619,7 +782,11 @@ namespace ForgeFlow
 
         private void SupportButton_Click(object sender, RoutedEventArgs e)
         {
-            OpenActivationWindow();
+            var support = new SupportWindow(GetCurrentPlanDisplayText())
+            {
+                Owner = this
+            };
+            support.ShowDialog();
         }
 
         private void ClearLogButton_Click(object sender, RoutedEventArgs e)
@@ -670,6 +837,7 @@ namespace ForgeFlow
             if (!_uiInitialized)
                 return;
 
+            ApplyAutomaticCompatibility();
             RefreshUpscaleInsight();
             RefreshOutputPreview();
             RefreshProcessingOrderState();
@@ -715,6 +883,7 @@ namespace ForgeFlow
 
             RefreshUpscaleInsight();
             RefreshSubjectFocusInsight();
+            RefreshWorkflowRecommendation();
             if (_settings == null)
                 return;
 
@@ -729,6 +898,7 @@ namespace ForgeFlow
 
             RefreshSubjectFocusInsight();
             RefreshOutputPreview();
+            RefreshWorkflowRecommendation();
             if (_settings == null)
                 return;
 
@@ -759,6 +929,7 @@ namespace ForgeFlow
 
             RefreshVisualStyleInsight();
             RefreshOutputPreview();
+            RefreshWorkflowRecommendation();
             if (_settings == null)
                 return;
 
@@ -794,7 +965,6 @@ namespace ForgeFlow
         {
             StartButton.IsEnabled = !busy && CanStartProcessing();
             CancelButton.IsEnabled = busy;
-            ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
             SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
             Glitch30Button.IsEnabled = !busy && CanRunGlitch30();
@@ -806,8 +976,7 @@ namespace ForgeFlow
             return (_toolStatus?.Ready ?? false) &&
                    _updateGatePassed &&
                    _cts == null &&
-                   HasRunnableInputOutput() &&
-                   (IsProActivated() || GetRemainingFreeExports() > 0);
+                   HasRunnableInputOutput();
         }
 
         private bool HasRunnableInputOutput()
@@ -826,7 +995,6 @@ namespace ForgeFlow
             bool busy = _cts != null;
             StartButton.IsEnabled = !busy && CanStartProcessing();
             CancelButton.IsEnabled = busy;
-            ActivationButton.IsEnabled = !busy && !_updateCheckInProgress && _updateGatePassed;
             SupportButton.IsEnabled = !busy;
             UpdateButton.IsEnabled = !busy && !_updateCheckInProgress;
             Glitch30Button.IsEnabled = !busy && CanRunGlitch30();
@@ -889,9 +1057,6 @@ namespace ForgeFlow
 
             if (PathsEqual(input, output))
                 return "Output cannot be the same file as input.";
-
-            if (IsFreePlan() && GetRemainingFreeExports() <= 0)
-                return $"Trial ended after {TrialManager.MaxTrialVideos} attempts. Activate a license to continue.";
 
             return "Ready to process.";
         }
@@ -989,21 +1154,75 @@ namespace ForgeFlow
                 return;
 
             string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
-            if (string.Equals(preset, "Aesthetic Vivid", StringComparison.OrdinalIgnoreCase))
+            // Presets are complete workflows, not just encoder speed choices.  Keeping
+            // the dependent controls in sync avoids combinations that are technically
+            // valid but confusing (for example RIFE disabled with an upscale-first
+            // pipeline).  Users can still fine-tune the individual controls afterwards.
+            if (string.Equals(preset, "Auto Smart", StringComparison.OrdinalIgnoreCase))
             {
+                // Source-aware baseline: native high-FPS captures do not need RIFE;
+                // low-bitrate gameplay gets restoration, while clean high-bitrate
+                // captures receive only the lightweight Pro detail pass.
+                double sourceFps = _selectedVideoInfo?.Fps ?? 30;
+                double sourceMbps = _selectedVideoInfo is { DurationSeconds: > 0 } info
+                    ? (info.SizeBytes * 8d / info.DurationSeconds) / 1_000_000d : 0;
+                bool compressed = sourceMbps > 0 && sourceMbps < 25;
+                SelectComboItemByTag(MotionComboBox, sourceFps >= 50 ? "off" : "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
+                SelectComboItemByTag(VisualStyleComboBox, compressed ? "gaming-restore" : "game-detail-pro");
+                SelectComboItemByTag(SubjectFocusComboBox, "protect");
+                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+                VisualStyleStrengthSlider.Value = compressed ? 65 : (sourceFps >= 50 ? 55 : 70);
+            }
+            else if (string.Equals(preset, "Fast", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(MotionComboBox, "off");
+                SelectComboItemByTag(UpscaleComboBox, "off");
+                SelectComboItemByTag(VisualStyleComboBox, "natural");
+                SelectComboItemByTag(SubjectFocusComboBox, "off");
+                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+                VisualStyleStrengthSlider.Value = 0;
+            }
+            else if (string.Equals(preset, "Balanced", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(MotionComboBox, "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
+                SelectComboItemByTag(VisualStyleComboBox, "game-detail");
+                SelectComboItemByTag(SubjectFocusComboBox, "protect");
+                VisualStyleStrengthSlider.Value = 60;
+            }
+            else if (string.Equals(preset, "Quality", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(MotionComboBox, "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
+                SelectComboItemByTag(VisualStyleComboBox, "game-detail-pro");
+                SelectComboItemByTag(SubjectFocusComboBox, "protect");
+                VisualStyleStrengthSlider.Value = 75;
+            }
+            else if (string.Equals(preset, "Aesthetic Vivid", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectComboItemByTag(MotionComboBox, "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
                 SelectComboItemByTag(VisualStyleComboBox, "tiktok-vivid");
+                SelectComboItemByTag(SubjectFocusComboBox, "off");
                 if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 75)
                     VisualStyleStrengthSlider.Value = 80;
             }
             else if (string.Equals(preset, "TikTok Ultra", StringComparison.OrdinalIgnoreCase))
             {
+                SelectComboItemByTag(MotionComboBox, "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
                 SelectComboItemByTag(VisualStyleComboBox, "tiktok-detail");
+                SelectComboItemByTag(SubjectFocusComboBox, "protect");
                 if (VisualStyleStrengthSlider != null && VisualStyleStrengthSlider.Value < 70)
                     VisualStyleStrengthSlider.Value = 75;
             }
             else if (string.Equals(preset, "Gaming Restore Ultra", StringComparison.OrdinalIgnoreCase))
             {
+                SelectComboItemByTag(MotionComboBox, "on");
+                SelectComboItemByTag(UpscaleComboBox, "off");
                 SelectComboItemByTag(VisualStyleComboBox, "gaming-restore");
+                SelectComboItemByTag(SubjectFocusComboBox, "protect");
                 if (VisualStyleStrengthSlider != null)
                     VisualStyleStrengthSlider.Value = 72;
             }
@@ -1011,6 +1230,7 @@ namespace ForgeFlow
             RefreshPresetInsight();
             RefreshVisualStyleInsight();
             RefreshOutputPreview();
+            RefreshWorkflowRecommendation();
         }
 
         private void LoadUpscaleProfiles()
@@ -1019,11 +1239,42 @@ namespace ForgeFlow
             _upscaleProfiles.Add(new UpscaleProfile
             {
                 Id = "off",
-                DisplayName = "Off",
+                DisplayName = "Off • Keep source",
                 Insight = "Quality boost is off.",
                 Engine = "none",
                 Scale = 1
             });
+
+            // Local developer trial only.  The NVIDIA SDK/runtime is never
+            // copied into the customer build; the option appears only when
+            // the explicitly installed local test harness is discoverable.
+            if (TryFindNvidiaVfxTrial(out string nvidiaPython, out string nvidiaScript, out string nvidiaRuntime))
+            {
+                _upscaleProfiles.Add(new UpscaleProfile
+                {
+                    Id = "nvidia-vfx:local",
+                    DisplayName = "AI • NVIDIA VSR (local)",
+                    Insight = "NVIDIA VideoSuperRes local trial. Native 1x detail cleanup for 4K captures; 2x is available for 1080p sources. Not bundled or redistributed.",
+                    Engine = "nvidia-vfx",
+                    Scale = 1,
+                    PythonPath = nvidiaPython,
+                    ScriptPath = nvidiaScript,
+                    RuntimePath = nvidiaRuntime,
+                    Quality = "HIGHBITRATE_ULTRA"
+                });
+                _upscaleProfiles.Add(new UpscaleProfile
+                {
+                    Id = "nvidia-vfx:deblur-ultra",
+                    DisplayName = "AI • NVIDIA Deblur Ultra (local)",
+                    Insight = "NVIDIA VideoSuperRes Deblur Ultra for motion softness and blur cleanup. Native 1x detail cleanup; local-only and not redistributed.",
+                    Engine = "nvidia-vfx",
+                    Scale = 1,
+                    PythonPath = nvidiaPython,
+                    ScriptPath = nvidiaScript,
+                    RuntimePath = nvidiaRuntime,
+                    Quality = "DEBLUR_ULTRA"
+                });
+            }
 
             string toolsDir = GetBundledToolsDirectory();
             string nanoVsrModelsDir = Path.Combine(toolsDir, "nanovsr");
@@ -1036,7 +1287,7 @@ namespace ForgeFlow
                 _upscaleProfiles.Add(new UpscaleProfile
                 {
                     Id = "nanovsr:nanovsr:nanovsr_644k_t15_directml.onnx",
-                    DisplayName = "NanoVSR Video x4",
+                    DisplayName = "AI • NanoVSR Video x4 (slow)",
                     Insight = "Temporal 4x video restoration using 15-frame context and bundled DirectML GPU inference.",
                     Engine = "nanovsr",
                     ModelDirectoryName = "nanovsr",
@@ -1045,21 +1296,42 @@ namespace ForgeFlow
                 });
             }
 
+            // The dynamic-shape model is used for TensorRT because the editor
+            // tiles 1080p/4K frames at runtime. We only expose this profile when
+            // the actual TensorRT EP + NVIDIA runtime are present; otherwise the
+            // customer sees the stable DirectML profile and no broken option.
+            string nanoVsrTensorRtModel = Path.Combine(nanoVsrModelsDir, "nanovsr_644k_t15_dynamic.onnx");
+            TensorRtRuntimeInfo tensorRt = TensorRtRuntime.Detect();
+            if (File.Exists(nanoVsrTensorRtModel) && tensorRt.IsAvailable)
+            {
+                _upscaleProfiles.Add(new UpscaleProfile
+                {
+                    Id = "nanovsr:tensorrt:nanovsr_644k_t15_dynamic.onnx",
+                    DisplayName = "AI • NanoVSR TensorRT x4 (NVIDIA)",
+                    Insight = $"Real TensorRT FP16 video restoration with engine/timing cache. {tensorRt.Version} detected.",
+                    Engine = "nanovsr-tensorrt",
+                    ModelDirectoryName = "nanovsr",
+                    ModelName = "nanovsr_644k_t15_dynamic.onnx",
+                    Scale = 4,
+                    NanoVsrBackend = NanoVsrExecutionBackend.TensorRT
+                });
+            }
+
             if (Directory.Exists(realesrganModelsDir))
             {
-                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x2", "Anime Video x2", "Real-ESRGAN anime video model with 2x upscale.", "realesrgan", 2);
-                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x3", "Anime Video x3", "Real-ESRGAN anime video model with 3x upscale.", "realesrgan", 3);
-                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x4", "Anime Video x4", "Real-ESRGAN anime video model with 4x upscale.", "realesrgan", 4);
-                AddProfileIfPresent(realesrganModelsDir, "realesrgan-x4plus-anime", "Real-ESRGAN Anime x4", "Sharper anime-oriented 4x upscale using Real-ESRGAN.", "realesrgan", 4);
-                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus", "Real-ESRNet x4", "Natural-looking 4x upscale with lighter sharpening.", "realesrgan", 4);
-                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus-x4", "Real-ESRNet x4 Plus", "Alternative 4x Real-ESRNet profile for softer restoration.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x2", "AI • Anime Video x2", "Real-ESRGAN anime video model with 2x upscale.", "realesrgan", 2);
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x3", "AI • Anime Video x3", "Real-ESRGAN anime video model with 3x upscale.", "realesrgan", 3);
+                AddProfileIfPresent(realesrganModelsDir, "realesr-animevideov3-x4", "AI • Anime Video x4", "Real-ESRGAN anime video model with 4x upscale.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrgan-x4plus-anime", "AI • Real-ESRGAN Anime x4", "Sharper anime-oriented 4x upscale using Real-ESRGAN.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus", "AI • Real-ESRNet x4", "Natural-looking 4x upscale with lighter sharpening.", "realesrgan", 4);
+                AddProfileIfPresent(realesrganModelsDir, "realesrnet-x4plus-x4", "AI • Real-ESRNet x4 Plus", "Alternative 4x Real-ESRNet profile for softer restoration.", "realesrgan", 4);
             }
 
             if (Directory.Exists(realcuganModelsDir))
             {
-                AddProfileIfPresent(realcuganModelsDir, "up2x-no-denoise", "Real-CUGAN x2 Clean", "2x upscale with minimal denoise for anime lines and UI captures.", "realcugan", 2, "models-se");
-                AddProfileIfPresent(realcuganModelsDir, "up3x-no-denoise", "Real-CUGAN x3 Clean", "3x upscale with minimal denoise for anime-style material.", "realcugan", 3, "models-se");
-                AddProfileIfPresent(realcuganModelsDir, "up4x-no-denoise", "Real-CUGAN x4 Clean", "4x upscale with minimal denoise for maximum retained texture.", "realcugan", 4, "models-se");
+                AddProfileIfPresent(realcuganModelsDir, "up2x-no-denoise", "AI • Real-CUGAN x2 Clean", "2x upscale with minimal denoise for anime lines and UI captures.", "realcugan", 2, "models-se");
+                AddProfileIfPresent(realcuganModelsDir, "up3x-no-denoise", "AI • Real-CUGAN x3 Clean", "3x upscale with minimal denoise for anime-style material.", "realcugan", 3, "models-se");
+                AddProfileIfPresent(realcuganModelsDir, "up4x-no-denoise", "AI • Real-CUGAN x4 Clean", "4x upscale with minimal denoise for maximum retained texture.", "realcugan", 4, "models-se");
             }
 
             UpscaleComboBox.Items.Clear();
@@ -1069,6 +1341,17 @@ namespace ForgeFlow
                 {
                     Content = profile.DisplayName,
                     Tag = profile.Id
+                });
+            }
+
+            if (File.Exists(nanoVsrTensorRtModel) && !tensorRt.IsAvailable)
+            {
+                UpscaleComboBox.Items.Add(new ComboBoxItem
+                {
+                    Content = "AI • NanoVSR TensorRT (runtime غير مثبت)",
+                    Tag = "nanovsr:tensorrt:unavailable",
+                    IsEnabled = false,
+                    ToolTip = tensorRt.Message
                 });
             }
 
@@ -1107,10 +1390,52 @@ namespace ForgeFlow
             });
         }
 
+        private static bool TryFindNvidiaVfxTrial(out string pythonPath, out string scriptPath, out string runtimePath)
+        {
+            pythonPath = "";
+            scriptPath = "";
+            runtimePath = "";
+
+            string[] roots =
+            {
+                Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "quality-tests"),
+                Path.Combine(AppContext.BaseDirectory, "quality-tests"),
+                @"D:\ForgeFlow\ForgeFlow\quality-tests",
+                @"C:\Users\Hatem\Documents\Codex\2026-08-07\forgeflow\quality-tests"
+            };
+            string[] pythons =
+            {
+                @"C:\Users\Hatem\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
+                @"C:\Python312\python.exe",
+                @"C:\Python314\python.exe"
+            };
+
+            foreach (string rootCandidate in roots)
+            {
+                string root = Path.GetFullPath(rootCandidate);
+                string script = Path.Combine(root, "nvidia_vsr_benchmark.py");
+                string runtime = Path.Combine(root, "nvidia-vfx-runtime");
+                if (!File.Exists(script) || !Directory.Exists(runtime))
+                    continue;
+
+                string? python = pythons.FirstOrDefault(File.Exists);
+                if (string.IsNullOrWhiteSpace(python))
+                    continue;
+
+                pythonPath = python;
+                scriptPath = script;
+                runtimePath = runtime;
+                return true;
+            }
+
+            return false;
+        }
+
         private void ApplySelectedUpscaleProfile(VideoInterpolator interpolator)
         {
             UpscaleProfile profile = GetSelectedUpscaleProfile();
-            interpolator.EnableUpscale = profile.Engine != "none";
+            interpolator.EnableUpscale = profile.Engine != "none" && profile.Engine != "nvidia-vfx";
+            interpolator.EnableNvidiaVfxTrial = profile.Engine == "nvidia-vfx";
             interpolator.UpscaleScale = profile.Scale;
             interpolator.UpscaleModelName = profile.ModelName;
             interpolator.UpscaleDisplayName = profile.DisplayName;
@@ -1122,11 +1447,56 @@ namespace ForgeFlow
                 _ => ""
             };
             interpolator.UpscaleEngine = profile.Engine;
+            interpolator.NanoVsrBackend = profile.NanoVsrBackend;
+            interpolator.NanoVsrDeviceId = 0;
+            interpolator.NanoVsrEngineCachePath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ForgeFlow",
+                "TensorRTCache");
             // Let NCNN choose the Vulkan device and tile size from the actual frame/model.
             // A fixed tile can be faster in a tiny benchmark but much slower for x3/x4 footage.
             interpolator.UpscaleGpuId = "auto";
             interpolator.UpscaleTileSize = 0;
             interpolator.UpscaleThreads = "1:2:2";
+            interpolator.NvidiaVfxPythonPath = profile.PythonPath;
+            interpolator.NvidiaVfxScriptPath = profile.ScriptPath;
+            interpolator.NvidiaVfxRuntimePath = profile.RuntimePath;
+            interpolator.NvidiaVfxQuality = string.IsNullOrWhiteSpace(profile.Quality) ? "HIGHBITRATE_ULTRA" : profile.Quality;
+            interpolator.NvidiaVfxScale = profile.Scale;
+        }
+
+        private void NormalizeUpscaleForSourceResolution()
+        {
+            UpscaleProfile selected = GetSelectedUpscaleProfile();
+            if (!selected.Engine.StartsWith("nanovsr", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            int width = _selectedVideoInfo?.Width ?? 0;
+            int height = _selectedVideoInfo?.Height ?? 0;
+            if (width <= 0 || height <= 0)
+                return;
+
+            long outputPixels = (long)width * height * NanoVsrProcessor.ModelScale * NanoVsrProcessor.ModelScale;
+            if (outputPixels <= NanoVsrProcessor.MaxOutputPixels)
+                return;
+
+            // NanoVSR is a 4x model. For 1440p/4K sources, a 4x output is
+            // needlessly huge and unsafe; prefer the bundled 2x gaming model
+            // so the job remains useful instead of failing after extraction.
+            UpscaleProfile? fallback = _upscaleProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.Engine, "realcugan", StringComparison.OrdinalIgnoreCase) &&
+                profile.Scale == 2 &&
+                string.Equals(profile.ModelName, "up2x-no-denoise", StringComparison.OrdinalIgnoreCase));
+            fallback ??= _upscaleProfiles.FirstOrDefault(profile => profile.Scale == 2 && profile.Engine != "none");
+            fallback ??= _upscaleProfiles.FirstOrDefault(profile => profile.Engine == "none");
+            if (fallback == null)
+                return;
+
+            SelectComboItemByTag(UpscaleComboBox, fallback.Id);
+            RefreshUpscaleInsight();
+            long outputWidth = (long)width * NanoVsrProcessor.ModelScale;
+            long outputHeight = (long)height * NanoVsrProcessor.ModelScale;
+            AppendLog($"Safety fallback: NanoVSR x{NanoVsrProcessor.ModelScale} would produce {outputWidth}x{outputHeight} ({outputPixels:N0} pixels); switched to {fallback.DisplayName} for this source.");
         }
 
         private void ApplySelectedMotion(VideoInterpolator interpolator)
@@ -1149,32 +1519,12 @@ namespace ForgeFlow
             string mode = GetEffectiveHardwareMode();
             interpolator.HardwareAccelerationMode = mode;
             interpolator.UseNvidiaHevcEncoder = ShouldUseNvidiaHevcEncoder();
-        }
-
-        private bool IsProActivated()
-        {
-            GuardDecision decision = _licenseGuard.EvaluateAccess();
-            return decision.Allowed && decision.Mode == LicenseAccessMode.Licensed;
-        }
-
-        private bool IsFreePlan()
-        {
-            return !IsProActivated();
-        }
-
-        private int GetRemainingFreeExports()
-        {
-            var (allowed, remaining, _) = TrialManager.CheckTrial();
-            return allowed ? remaining : 0;
+            interpolator.UseAmdHevcEncoder = ShouldUseAmdHevcEncoder();
         }
 
         private string GetCurrentPlanDisplayText()
         {
-            if (IsProActivated())
-                return "Pro activated | unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
-
-            int remaining = GetRemainingFreeExports();
-            return $"Trial | {remaining}/{TrialManager.MaxTrialVideos} attempts left | full features";
+            return "Free and open source | unlimited processing | no activation required";
         }
 
         private void ApplyPlanRestrictionsToUi(bool showMessage)
@@ -1190,7 +1540,7 @@ namespace ForgeFlow
             QualityBoostTitleTextBlock.Text = "Quality Boost";
             PipelineOrderTitleTextBlock.Text = "Pipeline Order";
             SubjectFocusTitleTextBlock.Text = "Subject Focus";
-            HardwareHintTextBlock.Text = "All modes are available during the 3-attempt trial.\nكل المودات متاحة خلال التجربة ذات 3 محاولات.";
+            HardwareHintTextBlock.Text = "All processing modes are free with no activation limit.\nجميع أوضاع المعالجة مجانية بلا تفعيل أو حدّ للمحاولات.";
             QualityBoostHintTextBlock.Text = "";
             PipelineHintTextBlock.Text = "";
 
@@ -1242,8 +1592,6 @@ namespace ForgeFlow
             };
 
             welcome.ShowDialog();
-            if (welcome.OpenUpgrade)
-                OpenActivationWindow();
         }
 
         private UpscaleProfile GetSelectedUpscaleProfile()
@@ -1307,7 +1655,95 @@ namespace ForgeFlow
 
         private void RefreshProcessingOrderState()
         {
-            ProcessingOrderComboBox.IsEnabled = true;
+            if (ProcessingOrderComboBox == null || UpscaleComboBox == null || MotionComboBox == null)
+                return;
+
+            bool rife = IsRifeEnabled();
+            UpscaleProfile profile = _upscaleProfiles.Count == 0
+                ? new UpscaleProfile { Engine = "none", Scale = 1, DisplayName = "Off" }
+                : GetSelectedUpscaleProfile();
+            bool upscale = profile.Engine != "none";
+
+            // The order selector is only meaningful when both stages exist.  For every
+            // upscale model currently shipped, running RIFE first is the safe path: it
+            // avoids multiplying VRAM use and keeps the temporal interpolator at the
+            // source resolution.  The control is therefore locked and corrected rather
+            // than allowing a silent, very slow configuration.
+            bool forceRifeFirst = rife && upscale;
+            if (!rife || !upscale || forceRifeFirst)
+            {
+                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+                ProcessingOrderComboBox.IsEnabled = false;
+            }
+            else
+            {
+                ProcessingOrderComboBox.IsEnabled = true;
+            }
+
+            RefreshWorkflowRecommendation();
+        }
+
+        private void ApplyAutomaticCompatibility()
+        {
+            if (UpscaleComboBox == null || MotionComboBox == null)
+                return;
+
+            UpscaleProfile profile = _upscaleProfiles.Count == 0
+                ? new UpscaleProfile { Engine = "none", Scale = 1 }
+                : GetSelectedUpscaleProfile();
+            bool temporalUpscale = string.Equals(profile.Engine, "nvidia-vfx", StringComparison.OrdinalIgnoreCase)
+                                   || profile.Engine.StartsWith("nanovsr", StringComparison.OrdinalIgnoreCase);
+
+            // A native 50/60fps source already has the target delivery cadence.  RIFE
+            // would invent extra motion only to be discarded later, and temporal VSR
+            // models also analyse neighbouring frames themselves.  Disable it for this
+            // case automatically; on 24/30fps input it remains available.
+            if (_selectedVideoInfo?.Fps >= 50.0
+                || (temporalUpscale && _selectedVideoInfo?.Fps >= 45.0))
+                SelectComboItemByTag(MotionComboBox, "off");
+
+            if (profile.Engine == "none")
+                SelectComboItemByTag(ProcessingOrderComboBox, "rife-then-upscale");
+        }
+
+        private void RefreshWorkflowRecommendation()
+        {
+            if (WorkflowRecommendationTextBlock == null || MotionComboBox == null || UpscaleComboBox == null)
+                return;
+
+            bool rife = IsRifeEnabled();
+            UpscaleProfile profile = _upscaleProfiles.Count == 0
+                ? new UpscaleProfile { Engine = "none", Scale = 1, DisplayName = "Off" }
+                : GetSelectedUpscaleProfile();
+            bool upscale = profile.Engine != "none";
+            bool subject = GetSelectedSubjectFocusMode() != SubjectFocusMode.Off;
+            string preset = ((PresetComboBox?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
+            string style = GetSelectedVisualStyleDisplayName();
+            string recommendation;
+
+            if (!rife && !upscale)
+            {
+                recommendation = "الاقتراح: مسار سريع وآمن — لا RIFE ولا AI Upscale. يحافظ على دقة وحركة المصدر.";
+            }
+            else if (rife && upscale)
+            {
+                recommendation = $"الاقتراح: RIFE أولاً ثم {profile.DisplayName}. تم تثبيت ترتيب الـPipeline تلقائياً لتفادي استهلاك VRAM وبطء غير ضروري.";
+            }
+            else if (rife)
+            {
+                recommendation = "الاقتراح: RIFE مفعّل فقط — مناسب لتحويل 30 إلى 60fps، بدون تغيير الدقة.";
+            }
+            else
+            {
+                recommendation = $"الاقتراح: {profile.DisplayName} فقط — مناسب لمصدر منخفض الدقة، بدون توليد إطارات جديدة.";
+            }
+
+            if (subject)
+                recommendation += " Subject Focus مفعّل؛ استخدمه فقط عندما تريد حماية الحواف أو إبراز الهدف.";
+
+            recommendation += $"  | Preset: {preset}  | Visual finish: {style}.";
+
+            WorkflowRecommendationTextBlock.Text = recommendation;
         }
 
         private bool IsRifeEnabled()
@@ -1386,6 +1822,8 @@ namespace ForgeFlow
         {
             return GetSelectedVisualStyleTag() switch
             {
+                "game-detail" => "Game Detail (Fast)",
+                "game-detail-pro" => "Game Detail Pro (Experimental)",
                 "tiktok-detail" => "TikTok Detail",
                 "gaming-restore" => "Gaming Restore",
                 "tiktok-vivid" => "TikTok Vivid",
@@ -1419,7 +1857,8 @@ namespace ForgeFlow
         private string GetEffectiveHardwareMode()
         {
             string selected = GetSelectedHardwareMode();
-            if (!string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(selected, "amd", StringComparison.OrdinalIgnoreCase))
                 return selected;
 
             (int width, int height) = GetEstimatedOutputDimensions();
@@ -1438,15 +1877,34 @@ namespace ForgeFlow
             return width > 4096 || height > 4096;
         }
 
+        private bool ShouldUseAmdHevcEncoder()
+        {
+            if (!string.Equals(GetEffectiveHardwareMode(), "amd", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            (int width, int height) = GetEstimatedOutputDimensions();
+            // H.264 hardware limits and driver behaviour are less consistent above
+            // 4K.  AMF HEVC is the safer AMD path for large local masters; TikTok
+            // outputs remain H.264 for upload compatibility.
+            return width > 4096 || height > 4096;
+        }
+
         private string GetEffectiveHardwareModeDisplayName()
         {
             string selected = GetSelectedHardwareMode();
             string effective = GetEffectiveHardwareMode();
-            if (string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase) && !string.Equals(effective, selected, StringComparison.OrdinalIgnoreCase))
-                return "CPU (NVENC skipped: frame > 8192)";
+            if ((string.Equals(selected, "nvidia", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(selected, "amd", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(effective, selected, StringComparison.OrdinalIgnoreCase))
+                return string.Equals(selected, "amd", StringComparison.OrdinalIgnoreCase)
+                    ? "CPU (AMF skipped: frame > 8192)"
+                    : "CPU (NVENC skipped: frame > 8192)";
 
             if (ShouldUseNvidiaHevcEncoder())
                 return "NVIDIA HEVC NVENC (large frame)";
+
+            if (ShouldUseAmdHevcEncoder())
+                return "AMD HEVC AMF (large frame)";
 
             return effective switch
             {
@@ -1529,41 +1987,7 @@ namespace ForgeFlow
 
         private bool EnsureAccessBeforeProcessing()
         {
-            GuardDecision decision = _licenseGuard.EvaluateAccess();
-            if (decision.Allowed)
-            {
-                if (decision.Mode == LicenseAccessMode.Trial)
-                {
-                    return true;
-                }
-
-                return true;
-            }
-
-            var openActivation = MessageBox.Show(
-                this,
-                decision.Message + "\n\nهل تريد فتح التفعيل أو المتجر الآن؟",
-                "Activation Required",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
-
-            if (openActivation == MessageBoxResult.Yes)
-            {
-                OpenActivationWindow();
-                return _licenseGuard.EvaluateAccess().Allowed;
-            }
-
-            return false;
-        }
-
-        private void OpenActivationWindow()
-        {
-            var window = new LicenseWindow(_licenseManager)
-            {
-                Owner = this
-            };
-            window.ShowDialog();
-            UpdateLicenseStatus();
+            return _licenseGuard.EvaluateAccess().Allowed;
         }
 
         private bool AdvanceLicenseCheckpoint(LicenseGuard.GuardSession? session, string checkpoint)
@@ -1638,13 +2062,13 @@ namespace ForgeFlow
                     _updateGatePassed = false;
                     ToolsStatusTextBlock.Text = "This build is disabled";
                     ToolsStatusTextBlock.Foreground = Brushes.OrangeRed;
-                    EstimateTextBlock.Text = "Processing and activation are locked by the publisher.";
+                    EstimateTextBlock.Text = "This version is disabled by the publisher.";
                     EstimateTextBlock.Foreground = Brushes.Orange;
                     MessageBox.Show(
                         this,
                         "تم إيقاف هذه النسخة من ForgeFlow Lite من قبل المطور.\n\n" +
                         update.MandatoryReason + "\n\n" +
-                        "المعالجة والتفعيل متوقفان حتى يتم نشر نسخة مسموحة.",
+                        "تم إيقاف هذه النسخة حتى يتم نشر تحديث مسموح.",
                         "ForgeFlow Disabled",
                         MessageBoxButton.OK,
                         MessageBoxImage.Stop);
@@ -1706,7 +2130,7 @@ namespace ForgeFlow
                 _updateGatePassed = false;
                 ToolsStatusTextBlock.Text = "Update check failed";
                 ToolsStatusTextBlock.Foreground = Brushes.Orange;
-                EstimateTextBlock.Text = "Start and activation remain locked until mandatory update check succeeds.";
+                EstimateTextBlock.Text = "Start remains locked until the mandatory update check succeeds.";
                 EstimateTextBlock.Foreground = Brushes.Orange;
                 if (showNoUpdateMessage)
                 {
@@ -1741,9 +2165,6 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "fast";
                     interpolator.TikTokMaxRate = "35M";
                     interpolator.TikTokBufSize = "70M";
-                    interpolator.TikTok60UltraBitrate = "15M";
-                    interpolator.TikTok60UltraMaxRate = "15M";
-                    interpolator.TikTok60UltraBufSize = "30M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "Quality":
@@ -1753,9 +2174,6 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "veryslow";
                     interpolator.TikTokMaxRate = "50M";
                     interpolator.TikTokBufSize = "100M";
-                    interpolator.TikTok60UltraBitrate = "24M";
-                    interpolator.TikTok60UltraMaxRate = "24M";
-                    interpolator.TikTok60UltraBufSize = "48M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "Aesthetic Vivid":
@@ -1765,9 +2183,6 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "veryslow";
                     interpolator.TikTokMaxRate = "70M";
                     interpolator.TikTokBufSize = "140M";
-                    interpolator.TikTok60UltraBitrate = "48M";
-                    interpolator.TikTok60UltraMaxRate = "48M";
-                    interpolator.TikTok60UltraBufSize = "96M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "TikTok Ultra":
@@ -1778,9 +2193,6 @@ namespace ForgeFlow
                     interpolator.TikTokMaxRate = "120M";
                     interpolator.TikTokBufSize = "240M";
                     interpolator.TikTok60UltraCrf = 8;
-                    interpolator.TikTok60UltraBitrate = "80M";
-                    interpolator.TikTok60UltraMaxRate = "120M";
-                    interpolator.TikTok60UltraBufSize = "240M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 case "Gaming Restore Ultra":
@@ -1791,9 +2203,6 @@ namespace ForgeFlow
                     interpolator.TikTokMaxRate = "96M";
                     interpolator.TikTokBufSize = "192M";
                     interpolator.TikTok60UltraCrf = 9;
-                    interpolator.TikTok60UltraBitrate = "48M";
-                    interpolator.TikTok60UltraMaxRate = "80M";
-                    interpolator.TikTok60UltraBufSize = "160M";
                     interpolator.PngCompressionLevel = 1;
                     break;
                 default:
@@ -1803,9 +2212,6 @@ namespace ForgeFlow
                     interpolator.TikTokPreset = "slow";
                     interpolator.TikTokMaxRate = "42M";
                     interpolator.TikTokBufSize = "84M";
-                    interpolator.TikTok60UltraBitrate = "15M";
-                    interpolator.TikTok60UltraMaxRate = "15M";
-                    interpolator.TikTok60UltraBufSize = "30M";
                     interpolator.PngCompressionLevel = 1;
                     break;
             }
@@ -1815,19 +2221,18 @@ namespace ForgeFlow
         {
             interpolator.EnhanceFilterStyle = GetSelectedVisualStyleTag();
             interpolator.EnhanceFilterStrength = GetSelectedVisualStyleStrengthPercent() / 100.0;
-            if (string.Equals(interpolator.EnhanceFilterStyle, "tiktok-detail", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(interpolator.EnhanceFilterStyle, "game-detail", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(interpolator.EnhanceFilterStyle, "game-detail-pro", StringComparison.OrdinalIgnoreCase))
+            {
+                interpolator.TikTok60UltraCrf = Math.Min(interpolator.TikTok60UltraCrf, 12);
+            }
+            else if (string.Equals(interpolator.EnhanceFilterStyle, "tiktok-detail", StringComparison.OrdinalIgnoreCase))
             {
                 interpolator.TikTok60UltraCrf = 8;
-                interpolator.TikTok60UltraBitrate = "80M";
-                interpolator.TikTok60UltraMaxRate = "120M";
-                interpolator.TikTok60UltraBufSize = "240M";
             }
             else if (string.Equals(interpolator.EnhanceFilterStyle, "gaming-restore", StringComparison.OrdinalIgnoreCase))
             {
                 interpolator.TikTok60UltraCrf = Math.Min(interpolator.TikTok60UltraCrf, 9);
-                interpolator.TikTok60UltraBitrate = "48M";
-                interpolator.TikTok60UltraMaxRate = "80M";
-                interpolator.TikTok60UltraBufSize = "160M";
             }
         }
 
@@ -1849,111 +2254,16 @@ namespace ForgeFlow
             }
         }
 
-        private string GetProRemainingDisplay()
-        {
-            LicenseInfo license = _licenseManager.CurrentLicense;
-            if (license.Type == LicenseType.Lifetime)
-                return "Lifetime | مدى الحياة";
-
-            if (!license.ExpiresOn.HasValue)
-                return "Active | نشط";
-
-            TimeSpan remaining = license.ExpiresOn.Value - DateTime.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-                return "Expired | منتهي";
-
-            if (remaining.TotalDays >= 60)
-                return $"{Math.Ceiling(remaining.TotalDays / 30)} months left | متبقي {Math.Ceiling(remaining.TotalDays / 30)} أشهر";
-
-            if (remaining.TotalDays >= 2)
-                return $"{Math.Ceiling(remaining.TotalDays)} days left | متبقي {Math.Ceiling(remaining.TotalDays)} أيام";
-
-            if (remaining.TotalHours >= 2)
-                return $"{Math.Ceiling(remaining.TotalHours)} hours left | متبقي {Math.Ceiling(remaining.TotalHours)} ساعات";
-
-            return "Less than 2 hours left | متبقي أقل من ساعتين";
-        }
-
-        private string GetProExpiryDateDisplay()
-        {
-            LicenseInfo license = _licenseManager.CurrentLicense;
-            if (license.Type == LicenseType.Lifetime)
-                return "Expires: Never | تاريخ الانتهاء: لا ينتهي";
-
-            if (!license.ExpiresOn.HasValue)
-                return "Expires: Unknown | تاريخ الانتهاء: غير معروف";
-
-            return $"Expires: {license.ExpiresOn.Value:yyyy-MM-dd} | تاريخ الانتهاء: {license.ExpiresOn.Value:yyyy-MM-dd}";
-        }
-
-        private Brush GetProStatusBrush()
-        {
-            LicenseInfo license = _licenseManager.CurrentLicense;
-            if (license.Type == LicenseType.Lifetime || !license.ExpiresOn.HasValue)
-                return Brushes.LightGreen;
-
-            TimeSpan remaining = license.ExpiresOn.Value - DateTime.UtcNow;
-            if (remaining.TotalDays < 3)
-                return Brushes.OrangeRed;
-
-            if (remaining.TotalDays < 7)
-                return Brushes.Gold;
-
-            return Brushes.LightGreen;
-        }
-
         private void UpdateLicenseStatus()
         {
-            GuardDecision decision = _licenseGuard.EvaluateAccess();
-            if (decision.Allowed && decision.Mode == LicenseAccessMode.Licensed)
-            {
-                Brush proBrush = GetProStatusBrush();
-                bool warning = proBrush != Brushes.LightGreen;
-                PlanBadgeTextBlock.Text = warning ? "PRO ENDING SOON" : "PRO ACTIVE";
-                PlanBadgeBorder.Background = warning
-                    ? new SolidColorBrush(Color.FromRgb(74, 41, 16))
-                    : new SolidColorBrush(Color.FromRgb(26, 66, 44));
-                PlanBadgeBorder.BorderBrush = warning
-                    ? new SolidColorBrush(Color.FromRgb(255, 159, 10))
-                    : new SolidColorBrush(Color.FromRgb(48, 209, 88));
-                PlanBadgeTextBlock.Foreground = warning
-                    ? new SolidColorBrush(Color.FromRgb(255, 223, 179))
-                    : new SolidColorBrush(Color.FromRgb(202, 255, 220));
-                LicenseStatusTextBlock.Text = "Plan: Pro | " + GetProRemainingDisplay();
-                LicenseStatusTextBlock.Foreground = proBrush;
-                PlanDetailsTextBlock.Text = GetProExpiryDateDisplay() + " | Unlimited exports | CPU + NVIDIA + AMD | Quality Boost unlocked";
-                PlanDetailsTextBlock.Foreground = warning ? proBrush : Brushes.LightGray;
-                ActivationButton.Content = "License";
-                ApplyPlanRestrictionsToUi(showMessage: false);
-                RefreshActionButtons();
-                return;
-            }
-
-            if (decision.Allowed && decision.Mode == LicenseAccessMode.Trial)
-            {
-                PlanBadgeTextBlock.Text = "TRIAL";
-                PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(44, 32, 19));
-                PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 159, 10));
-                PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 224, 173));
-                LicenseStatusTextBlock.Text = $"{decision.Remaining}/{TrialManager.MaxTrialVideos} trials left";
-                LicenseStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 179, 64));
-                PlanDetailsTextBlock.Text = "Full feature trial";
-                PlanDetailsTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(142, 142, 147));
-                ActivationButton.Content = "Activate / Buy";
-                ApplyPlanRestrictionsToUi(showMessage: false);
-                RefreshActionButtons();
-                return;
-            }
-
-            PlanBadgeTextBlock.Text = "TRIAL ENDED";
-            PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(74, 41, 16));
-            PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 159, 10));
-            PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 223, 179));
-            LicenseStatusTextBlock.Text = "Activation required";
-            LicenseStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
-            PlanDetailsTextBlock.Text = $"0/{TrialManager.MaxTrialVideos} trials left";
-            PlanDetailsTextBlock.Foreground = Brushes.Orange;
-            ActivationButton.Content = "Activate / Buy";
+            PlanBadgeTextBlock.Text = "FREE & OPEN SOURCE";
+            PlanBadgeBorder.Background = new SolidColorBrush(Color.FromRgb(26, 66, 44));
+            PlanBadgeBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(48, 209, 88));
+            PlanBadgeTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(202, 255, 220));
+            LicenseStatusTextBlock.Text = "No activation required | لا يحتاج إلى تفعيل";
+            LicenseStatusTextBlock.Foreground = Brushes.LightGreen;
+            PlanDetailsTextBlock.Text = "Unlimited processing | MIT license | Unlimited exports";
+            PlanDetailsTextBlock.Foreground = Brushes.LightGray;
             ApplyPlanRestrictionsToUi(showMessage: false);
             RefreshActionButtons();
         }
@@ -2002,6 +2312,11 @@ namespace ForgeFlow
             string inputName = Path.GetFileName(inputPath);
             string videoInfo = _selectedVideoInfo?.Summary ?? "Video details: not loaded";
             string estimate = _selectedVideoInfo?.Estimate ?? "Estimate: depends on video and GPU";
+            var selectedOutputs = new List<string>();
+            if (GeneratePc60CheckBox?.IsChecked == true) selectedOutputs.Add(Path.GetFileName(outputs[0]));
+            if (Generate4KCheckBox?.IsChecked == true) selectedOutputs.Add(Path.GetFileName(outputs[1]));
+            if (GenerateTikTok60CheckBox?.IsChecked == true) selectedOutputs.Add(Path.GetFileName(outputs[2]));
+            if (GenerateTikTok30CheckBox?.IsChecked == true) selectedOutputs.Add(Path.GetFileName(outputs[3]));
 
             string message =
                 "ملخص المعالجة قبل البدء:\n\n" +
@@ -2014,10 +2329,8 @@ namespace ForgeFlow
                 $"رفع الجودة: {GetSelectedUpscaleProfile().DisplayName}\n" +
                 $"{videoInfo}\n" +
                 $"{estimate}\n\n" +
-                "سيتم إنشاء ثلاثة ملفات:\n" +
-                "- " + Path.GetFileName(outputs[0]) + "\n" +
-                "- " + Path.GetFileName(outputs[1]) + "\n" +
-                "- " + Path.GetFileName(outputs[2]) + "\n\n" +
+                $"سيتم إنشاء {selectedOutputs.Count} مخرج/مخرجات فقط:\n" +
+                string.Join("\n", selectedOutputs.Select(name => "- " + name)) + "\n\n" +
                 "هل تريد بدء المعالجة؟";
 
             return MessageBox.Show(this, message, "Processing Summary", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
@@ -2160,7 +2473,9 @@ namespace ForgeFlow
                 : "version.txt missing";
 
             string manifestState = result.ManifestPresent
-                ? "tools.sha256 verified"
+                ? (result.ManifestSignaturePresent
+                    ? (result.ManifestSignatureValid ? "tools.sha256 + signature verified" : "tools.sha256 signature invalid")
+                    : "tools.sha256 verified")
                 : "tools.sha256 missing";
 
             string modelState = result.RifeModelPresent
@@ -2207,6 +2522,7 @@ namespace ForgeFlow
             return new[]
             {
                 Path.Combine(outDir, $"{baseName}_Video 60FPS{ext}"),
+                Path.Combine(outDir, $"{baseName}_4K_Ultra{ext}"),
                 Path.Combine(outDir, $"{baseName}_TikTok60Ultra{ext}"),
                 Path.Combine(outDir, $"{baseName}_TikTok30FPS{ext}")
             };
@@ -2417,6 +2733,8 @@ namespace ForgeFlow
                 VideoInfoTextBlock.Text = info.Summary;
                 EstimateTextBlock.Text = info.Estimate;
                 VideoInfoTextBlock.Foreground = Brushes.LightGray;
+                ApplyAutomaticCompatibility();
+                RefreshProcessingOrderState();
                 RefreshOutputPreview();
             }
             catch (OperationCanceledException)
@@ -2427,6 +2745,57 @@ namespace ForgeFlow
                 VideoInfoTextBlock.Text = "Could not read video info.";
                 EstimateTextBlock.Text = ex.Message;
                 VideoInfoTextBlock.Foreground = Brushes.Orange;
+            }
+        }
+
+        private async Task EnsureSelectedVideoInfoForProcessingAsync(
+            string videoPath,
+            string ffprobePath,
+            CancellationToken cancellationToken)
+        {
+            if (_selectedVideoInfo != null && PathsEqual(InputTextBox.Text.Trim(), videoPath) &&
+                IsVideoInfoCurrent(videoPath, _selectedVideoInfo))
+                return;
+
+            try
+            {
+                VideoInfo? info = await VideoInfoReader.ReadAsync(ffprobePath, videoPath, cancellationToken);
+                if (info != null && PathsEqual(InputTextBox.Text.Trim(), videoPath))
+                {
+                    _selectedVideoInfo = info;
+                    VideoInfoTextBlock.Text = info.Summary;
+                    EstimateTextBlock.Text = info.Estimate;
+                    VideoInfoTextBlock.Foreground = Brushes.LightGray;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Metadata is advisory for normal processing. Keep the job
+                // usable when FFprobe cannot read a stream; the worker still
+                // performs its own frame-size safety check after extraction.
+                AppendLog("Warning: source metadata preflight unavailable: " + ex.Message);
+            }
+        }
+
+        private static bool IsVideoInfoCurrent(string videoPath, VideoInfo info)
+        {
+            try
+            {
+                FileInfo file = new(videoPath);
+                if (!file.Exists) return false;
+                // Metadata is cached asynchronously. Re-probe when the source
+                // was replaced in-place, otherwise a same-path edit could use
+                // stale dimensions/FPS for encoder and compatibility decisions.
+                return file.Length == info.SizeBytes &&
+                       file.LastWriteTimeUtc == info.LastWriteTimeUtc;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -2508,7 +2877,7 @@ namespace ForgeFlow
             string output = OutputTextBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(output) || string.IsNullOrWhiteSpace(Path.GetDirectoryName(output)))
             {
-                OutputPreviewTextBlock.Text = "Select a video to preview the two customer-ready exports.";
+                OutputPreviewTextBlock.Text = "Select a video to preview the 4K and customer-ready exports.";
                 OutputPreviewTextBlock.Foreground = Brushes.Gray;
                 return;
             }
@@ -2538,8 +2907,14 @@ namespace ForgeFlow
             string motionHint = IsRifeEnabled() ? " | RIFE on" : " | RIFE off";
             string hardwareHint = " | " + GetEffectiveHardwareModeDisplayName();
             string styleHint = " | " + GetSelectedVisualStyleDisplayName();
+            string fourKHint = $" | 4K target {GetSelectedFourKBitrateMbps()} Mbps";
+            var selectedOutputNames = new List<string>();
+            if (GeneratePc60CheckBox?.IsChecked == true) selectedOutputNames.Add(Path.GetFileName(outputs[0]));
+            if (Generate4KCheckBox?.IsChecked == true) selectedOutputNames.Add(Path.GetFileName(outputs[1]));
+            if (GenerateTikTok60CheckBox?.IsChecked == true) selectedOutputNames.Add(Path.GetFileName(outputs[2]));
+            if (GenerateTikTok30CheckBox?.IsChecked == true) selectedOutputNames.Add(Path.GetFileName(outputs[3]));
             OutputPreviewTextBlock.Text =
-                "Exports: " + Path.GetFileName(outputs[0]) + " + " + Path.GetFileName(outputs[1]) + " + " + Path.GetFileName(outputs[2]) + sizeHint + upscaleHint + motionHint + styleHint + hardwareHint;
+                "Exports: " + string.Join(" + ", selectedOutputNames) + sizeHint + upscaleHint + motionHint + styleHint + hardwareHint + fourKHint;
             OutputPreviewTextBlock.Foreground = Brushes.LightGray;
         }
 
@@ -2677,12 +3052,13 @@ namespace ForgeFlow
             string preset = ((PresetComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Balanced").Trim();
             PresetInsightTextBlock.Text = preset switch
             {
-                "Fast" => "Fast is best for demos and urgent delivery with smaller files.",
-                "Quality" => "Quality is best for portfolio clips and client-facing masters.",
-                "TikTok Ultra" => "TikTok Ultra preserves a high-quality 59.94 FPS upload master.",
-                "Gaming Restore Ultra" => "Gaming Restore Ultra analyzes compressed gameplay, reduces block and ringing artifacts, restores edges, and creates an upload-safe 59.94 FPS master.",
-                "Aesthetic Vivid" => "Aesthetic Vivid targets TikTok-style saturated color, clean sharpness, and high bitrate.",
-                _ => "Balanced keeps a practical mix of quality, size, and processing time."
+                "Fast" => "Fast: RIFE off + AI off. أسرع تصدير ويحافظ على المصدر.",
+                "Auto Smart" => "Auto Smart: يحلل FPS والبت ريت تلقائيًا ويختار RIFE والترميم المناسبين دون إعدادات متعارضة.",
+                "Quality" => "Quality: RIFE on + Game Detail Pro. أفضل توازن لتسجيلات الألعاب الواضحة.",
+                "TikTok Ultra" => "TikTok Ultra: RIFE on + TikTok Detail + إعداد رفع عالي البت ريت.",
+                "Gaming Restore Ultra" => "Gaming Restore Ultra: تنظيف ضغط وحماية حواف للألعاب؛ لا يضيف AI Upscale على 4K بلا داعٍ.",
+                "Aesthetic Vivid" => "Aesthetic Vivid: ألوان أكثر حيوية وشحذ نظيف لأسلوب TikTok.",
+                _ => "Balanced: RIFE on + Game Detail. الخيار الآمن لمعظم المقاطع."
             };
         }
 
@@ -2917,6 +3293,7 @@ namespace ForgeFlow
                 || msg.StartsWith("Motion:", StringComparison.Ordinal)
                 || msg.StartsWith("Pipeline:", StringComparison.Ordinal)
                 || msg.StartsWith("Quality boost:", StringComparison.Ordinal)
+                || msg.StartsWith("4K Ultra:", StringComparison.Ordinal)
                 || msg.StartsWith("Upscale model:", StringComparison.Ordinal)
                 || msg.StartsWith("Upscale acceleration:", StringComparison.Ordinal)
                 || msg.StartsWith("Upscale speed:", StringComparison.Ordinal)
@@ -2924,6 +3301,7 @@ namespace ForgeFlow
                 || msg.StartsWith("NVDEC", StringComparison.Ordinal)
                 || msg.StartsWith("Selected:", StringComparison.Ordinal)
                 || msg.StartsWith("Video 60FPS:", StringComparison.Ordinal)
+                || msg.StartsWith("4K Ultra:", StringComparison.Ordinal)
                 || msg.StartsWith("TikTok60Ultra:", StringComparison.Ordinal)
                 || msg.StartsWith("TikTok30FPS:", StringComparison.Ordinal)
                 || msg.StartsWith("ERROR:", StringComparison.Ordinal)

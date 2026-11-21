@@ -6,14 +6,18 @@
     <RootNamespace>ForgeFlow</RootNamespace>
     <AssemblyName>ForgeFlow</AssemblyName>
     <Product>ForgeFlow</Product>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0.0</FileVersion>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <Version>1.2.1</Version>
+    <FileVersion>1.2.1.0</FileVersion>
+    <AssemblyVersion>1.2.1.0</AssemblyVersion>
     <ApplicationIcon>Assets\ForgeFlow.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseAppHost>true</UseAppHost>
+    <!-- TensorRT/CUDA is an optional vendor runtime. Keep it out of the
+         default/customer build; developer and NVIDIA-runtime packages can
+         opt in with -p:ForgeFlowIncludeTensorRt=true. -->
+    <ForgeFlowIncludeTensorRt Condition="'$(ForgeFlowIncludeTensorRt)' == ''">false</ForgeFlowIncludeTensorRt>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,12 +38,29 @@
     <Resource Include="Assets\ForgeFlowMark.png" />
     <Resource Include="Assets\SyrianMade.png" />
     <Resource Include="Assets\Emoji\*.png" />
+    <None Include="Tools\tools.sha256" CopyToOutputDirectory="Always" />
+    <Content Include="LICENSE" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="docs\third-party-notices.md" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="docs\licenses\GPL-3.0.txt" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="docs\licenses\FFmpeg-build-info.txt" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="RELEASE_NOTES_1.2.1.md" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <None Include="version.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- The base/customer build intentionally omits the optional NVIDIA
+       TensorRT vendor runtime. A separate runtime bundle opts in explicitly. -->
+  <ItemGroup Condition="'$(ForgeFlowIncludeTensorRt)' != 'true'">
+    <None Remove="Tools\tensorrt\**\*" />
     <None Update="Tools\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="Tools\tools.sha256" CopyToOutputDirectory="Always" />
-    <None Include="version.txt">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ForgeFlowIncludeTensorRt)' == 'true'">
+    <None Update="Tools\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 

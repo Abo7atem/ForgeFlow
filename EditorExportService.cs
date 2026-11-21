@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -53,6 +54,17 @@ namespace ForgeFlow
 
             var video = model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Video).OrderBy(c => c.Start).ToList();
             if (video.Count == 0) throw new InvalidOperationException("لا يوجد أي مقطع فيديو على المسار V1.");
+            string fullOutputPath = Path.GetFullPath(outputPath);
+            string fullSourcePath = Path.GetFullPath(video[0].Source);
+            if (!File.Exists(fullSourcePath))
+                throw new FileNotFoundException("ملف الفيديو المصدر غير موجود. استخدم Relink Media من المحرر أولًا.", fullSourcePath);
+            if (string.Equals(fullSourcePath, fullOutputPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("لا يمكن حفظ الإخراج فوق ملف المصدر. اختر مسارًا جديدًا للحفاظ على الأصل.");
+            string? outputDirectory = Path.GetDirectoryName(fullOutputPath);
+            if (string.IsNullOrWhiteSpace(outputDirectory))
+                throw new InvalidOperationException("مسار الإخراج غير صالح.");
+            Directory.CreateDirectory(outputDirectory);
+            string partialOutputPath = fullOutputPath + ".forgeflow.partial." + Guid.NewGuid().ToString("N") + ".mp4";
             var audio = model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Audio).OrderBy(c => c.Start).ToList();
             string source = video[0].Source;
             var overlays = model.Clips.Where(c => c.Kind is EditTimelineModel.ClipKind.Image or EditTimelineModel.ClipKind.Text).OrderBy(c => c.Start).ToList();
@@ -84,6 +96,8 @@ namespace ForgeFlow
             foreach (var videoClip in video.Skip(1))
             {
                 string videoSource = Path.GetFullPath(videoClip.Source);
+                if (!File.Exists(videoSource))
+                    throw new FileNotFoundException("أحد مقاطع الفيديو غير موجود. استخدم Relink Media من المحرر.", videoSource);
                 if (!mediaInputIndexes.TryGetValue(videoSource, out int index))
                 {
                     start.ArgumentList.Add("-i");
@@ -96,6 +110,8 @@ namespace ForgeFlow
             foreach (var audioClip in audio)
             {
                 string audioSource = Path.GetFullPath(audioClip.Source);
+                if (!File.Exists(audioSource))
+                    throw new FileNotFoundException("أحد ملفات الصوت غير موجود. استخدم Relink Media من المحرر.", audioSource);
                 if (!mediaInputIndexes.TryGetValue(audioSource, out int index))
                 {
                     start.ArgumentList.Add("-i");
@@ -116,6 +132,8 @@ namespace ForgeFlow
             var imageInputs = new Dictionary<Guid, int>();
             foreach (var image in overlays.Where(c => c.Kind == EditTimelineModel.ClipKind.Image))
             {
+                if (!File.Exists(image.Source))
+                    throw new FileNotFoundException("أحد ملفات الصور غير موجود. استخدم Relink Media من المحرر.", image.Source);
                 start.ArgumentList.Add("-loop");
                 start.ArgumentList.Add("1");
                 start.ArgumentList.Add("-i");
@@ -123,7 +141,10 @@ namespace ForgeFlow
                 imageInputs[image.Id] = inputIndex++;
             }
 
-            double outputDuration = video.Sum(c => c.End - c.Start);
+            // The filter graph concatenates the exported video segments, so
+            // this is the exact duration that the final A/V validation must
+            // compare against (timeline overlays do not add video duration).
+            double outputDuration = Math.Max(0.04, video.Sum(c => c.End - c.Start));
             string filter = BuildFilter(video, audio, overlays, lenses, blurs, videoInputs, audioInputs, imageInputs, inputsWithAudio, targetWidth, targetHeight, targetFrameRate,
                 videoScaleX, videoScaleY, videoOffsetX, videoOffsetY, lensEnabled, lensX, lensY, lensZoom, lensSize, settings.IncludeAudio);
             start.ArgumentList.Add("-filter_complex");
@@ -153,56 +174,226 @@ namespace ForgeFlow
             start.ArgumentList.Add("-progress");
             start.ArgumentList.Add("pipe:1");
             start.ArgumentList.Add("-nostats");
-            start.ArgumentList.Add(outputPath);
+            start.ArgumentList.Add(partialOutputPath);
 
-            progress?.Report("بدء التصدير...");
-            using Process process = Process.Start(start) ?? throw new InvalidOperationException("تعذر تشغيل FFmpeg.");
+            try
+            {
+                progress?.Report("بدء التصدير...");
+                using Process process = Process.Start(start) ?? throw new InvalidOperationException("تعذر تشغيل FFmpeg.");
+                using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+                {
+                    try
+                    {
+                        if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    }
+                    catch
+                    {
+                        // The process may have completed between HasExited and Kill.
+                    }
+                });
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+                Task progressTask = ReadFfmpegProgressAsync(process.StandardOutput, outputDuration, progress, cancellationToken);
+                await Task.WhenAll(process.WaitForExitAsync(cancellationToken), progressTask);
+                string stderr = await stderrTask;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (process.ExitCode != 0)
+                {
+                    string tail = stderr.Length > 3000 ? stderr[^3000..] : stderr;
+                    if (settings.IsHardwareEncoder && IsHardwareEncoderFailure(tail))
+                    {
+                        EditorExportSettings fallback = settings.Clone();
+                        fallback.VideoEncoder = settings.IsHevc ? "libx265" : "libx264";
+                        fallback.Preset = "medium";
+                        progress?.Report("الترميز العتادي غير متاح؛ إعادة التصدير تلقائيًا عبر CPU مع الحفاظ على الإعدادات.");
+                        await ExportAsync(model, outputPath, fallback, videoScaleX, videoScaleY, videoOffsetX, videoOffsetY,
+                            lensEnabled, lensX, lensY, lensZoom, lensSize, progress, cancellationToken);
+                        return;
+                    }
+                    throw new InvalidOperationException("فشل تصدير الفيديو.\n" + tail);
+                }
+                string ffprobe = Path.Combine(AppContext.BaseDirectory, "Tools", "ffprobe.exe");
+                if (File.Exists(ffprobe))
+                {
+                    (bool valid, string validation) = await ValidateOutputAsync(
+                        ffprobe,
+                        partialOutputPath,
+                        settings,
+                        outputDuration,
+                        settings.IncludeAudio,
+                        cancellationToken);
+                    if (!valid)
+                        throw new InvalidOperationException("تم إنشاء الملف لكن فحص السلامة فشل: " + validation);
+                    progress?.Report("فحص الإخراج: PASS — " + validation);
+                }
+                File.Move(partialOutputPath, fullOutputPath, true);
+                progress?.Report("اكتمل التصدير.");
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(partialOutputPath)) File.Delete(partialOutputPath);
+                }
+                catch { }
+            }
+        }
+
+        private static bool IsHardwareEncoderFailure(string text)
+        {
+            string lower = text.ToLowerInvariant();
+            return lower.Contains("no capable devices") || lower.Contains("cannot load") || lower.Contains("dll")
+                   || lower.Contains("nvenc") || lower.Contains("amf") || lower.Contains("external library")
+                   || lower.Contains("invalid argument") || lower.Contains("device");
+        }
+
+        private static async Task<(bool Valid, string Message)> ValidateOutputAsync(
+            string ffprobe,
+            string outputPath,
+            EditorExportSettings settings,
+            double expectedDuration,
+            bool expectAudio,
+            CancellationToken cancellationToken)
+        {
+            if (!File.Exists(outputPath) || new FileInfo(outputPath).Length < 1024)
+                return (false, "ملف الإخراج مفقود أو صغير بشكل غير طبيعي.");
+            var probe = new ProcessStartInfo
+            {
+                FileName = ffprobe, UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            probe.ArgumentList.Add("-v"); probe.ArgumentList.Add("error");
+            probe.ArgumentList.Add("-show_entries"); probe.ArgumentList.Add("stream=width,height,codec_name,avg_frame_rate,codec_type:format=duration");
+            probe.ArgumentList.Add("-of"); probe.ArgumentList.Add("json");
+            probe.ArgumentList.Add(outputPath);
+            using Process process = Process.Start(probe) ?? throw new InvalidOperationException("تعذر تشغيل ffprobe لفحص الإخراج.");
             using CancellationTokenRegistration registration = cancellationToken.Register(() =>
             {
                 try
                 {
                     if (!process.HasExited) process.Kill(entireProcessTree: true);
                 }
-                catch
-                {
-                    // The process may have completed between HasExited and Kill.
-                }
+                catch { }
             });
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            Task progressTask = ReadFfmpegProgressAsync(process.StandardOutput, outputDuration, progress, cancellationToken);
-            await Task.WhenAll(process.WaitForExitAsync(cancellationToken), progressTask);
-            string stderr = await stderrTask;
-            cancellationToken.ThrowIfCancellationRequested();
+            string stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            string stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
             if (process.ExitCode != 0)
+                return (false, string.IsNullOrWhiteSpace(stderr) ? "ffprobe لم يستطع قراءة الملف." : stderr.Trim());
+            try
             {
-                string tail = stderr.Length > 3000 ? stderr[^3000..] : stderr;
-                throw new InvalidOperationException("فشل تصدير الفيديو.\n" + tail);
+                using JsonDocument document = JsonDocument.Parse(stdout);
+                JsonElement root = document.RootElement;
+                JsonElement streams = root.TryGetProperty("streams", out JsonElement streamArray) ? streamArray : default;
+                JsonElement stream = default;
+                if (streams.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement candidate in streams.EnumerateArray())
+                    {
+                        if (candidate.TryGetProperty("codec_type", out JsonElement type) &&
+                            string.Equals(type.GetString(), "video", StringComparison.OrdinalIgnoreCase))
+                        {
+                            stream = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (stream.ValueKind != JsonValueKind.Object)
+                    return (false, "لم يعثر ffprobe على مسار فيديو صالح.");
+                int width = stream.TryGetProperty("width", out JsonElement widthValue) ? widthValue.GetInt32() : 0;
+                int height = stream.TryGetProperty("height", out JsonElement heightValue) ? heightValue.GetInt32() : 0;
+                string codec = stream.TryGetProperty("codec_name", out JsonElement codecValue) ? codecValue.GetString() ?? "unknown" : "unknown";
+                string frameRateText = stream.TryGetProperty("avg_frame_rate", out JsonElement rateValue) ? rateValue.GetString() ?? "" : "";
+                double actualFrameRate = ParseFrameRate(frameRateText);
+                if (width <= 0 || height <= 0)
+                    return (false, "بيانات الدقة غير مكتملة.");
+            if (width != settings.Width || height != settings.Height)
+                return (false, $"الدقة الفعلية {width}×{height} بدل {settings.Width}×{settings.Height}.");
+                if (actualFrameRate > 0 && Math.Abs(actualFrameRate - settings.FrameRate) > 0.6)
+                    return (false, $"معدل الإطارات الفعلي {actualFrameRate:0.###} بدل {settings.FrameRate:0.###}.");
+                double actualDuration = root.TryGetProperty("format", out JsonElement format) &&
+                                        format.TryGetProperty("duration", out JsonElement durationValue) &&
+                                        double.TryParse(
+                                            durationValue.ValueKind == JsonValueKind.String ? durationValue.GetString() : durationValue.GetRawText(),
+                                            NumberStyles.Float,
+                                            CultureInfo.InvariantCulture,
+                                            out double parsedDuration)
+                    ? parsedDuration
+                    : 0;
+                if (actualDuration <= 0 || Math.Abs(actualDuration - expectedDuration) > Math.Max(0.12, 2.0 / Math.Max(1.0, settings.FrameRate)))
+                    return (false, $"مدة الإخراج {actualDuration:0.###} ثانية بدل {expectedDuration:0.###} ثانية.");
+                if (expectAudio)
+                {
+                    bool hasAudio = streams.ValueKind == JsonValueKind.Array &&
+                                    streams.EnumerateArray().Any(item => item.TryGetProperty("codec_type", out JsonElement type) &&
+                                                                         string.Equals(type.GetString(), "audio", StringComparison.OrdinalIgnoreCase));
+                    if (!hasAudio)
+                        return (false, "المسار الصوتي مفقود من الإخراج.");
+                }
+                string expectedCodec = settings.IsHevc ? "hevc" : "h264";
+                if (!string.Equals(codec, expectedCodec, StringComparison.OrdinalIgnoreCase))
+                    return (false, $"المرمّز الفعلي {codec} بدل {expectedCodec}.");
+                return (true, $"{width}×{height} • {actualFrameRate:0.###} FPS • {actualDuration:0.###} ث • {codec}{(expectAudio ? " • audio" : " • no audio")}");
             }
-            progress?.Report("اكتمل التصدير.");
+            catch (JsonException)
+            {
+                return (false, "تعذر تحليل نتيجة فحص ffprobe.");
+            }
+        }
+
+        private static double ParseFrameRate(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0;
+            string[] parts = value.Split('/');
+            if (parts.Length == 2 &&
+                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double numerator) &&
+                double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double denominator) &&
+                denominator != 0)
+                return numerator / denominator;
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double fps) ? fps : 0;
         }
 
         private static void AddVideoEncodingArguments(ProcessStartInfo start, EditorExportSettings settings)
         {
             start.ArgumentList.Add("-c:v");
             start.ArgumentList.Add(settings.VideoEncoder);
-            start.ArgumentList.Add("-preset");
-            start.ArgumentList.Add(settings.IsHardwareEncoder ? settings.Preset switch
+            if (settings.VideoEncoder is "h264_amf" or "hevc_amf")
             {
-                "fast" => "p3",
-                "slow" => "p6",
-                "quality" => "p7",
-                _ => "p5"
-            } : settings.Preset switch
+                start.ArgumentList.Add("-quality");
+                start.ArgumentList.Add(settings.Preset switch
+                {
+                    "fast" => "speed",
+                    "quality" => "quality",
+                    _ => "balanced"
+                });
+            }
+            else
             {
-                "fast" => "fast",
-                "slow" => "slow",
-                "quality" => "veryslow",
-                _ => "medium"
-            });
+                start.ArgumentList.Add("-preset");
+                start.ArgumentList.Add(settings.IsHardwareEncoder ? settings.Preset switch
+                {
+                    "fast" => "p3",
+                    "slow" => "p6",
+                    "quality" => "p7",
+                    _ => "p5"
+                } : settings.Preset switch
+                {
+                    "fast" => "fast",
+                    "slow" => "slow",
+                    "quality" => "veryslow",
+                    _ => "medium"
+                });
+            }
 
             if (settings.IsBitrateMode)
             {
-                if (settings.IsHardwareEncoder)
+                if (settings.VideoEncoder is "h264_amf" or "hevc_amf")
+                {
+                    start.ArgumentList.Add("-rc"); start.ArgumentList.Add("vbr_peak");
+                    start.ArgumentList.Add("-vbaq"); start.ArgumentList.Add("true");
+                    start.ArgumentList.Add("-preencode"); start.ArgumentList.Add("true");
+                    start.ArgumentList.Add("-high_motion_quality_boost_enable"); start.ArgumentList.Add("true");
+                }
+                else if (settings.IsHardwareEncoder)
                 {
                     start.ArgumentList.Add("-rc");
                     start.ArgumentList.Add("vbr");
@@ -217,11 +408,19 @@ namespace ForgeFlow
             else if (settings.IsHardwareEncoder)
             {
                 start.ArgumentList.Add("-rc");
-                start.ArgumentList.Add("vbr");
-                start.ArgumentList.Add("-cq");
-                start.ArgumentList.Add(settings.Quality.ToString(CultureInfo.InvariantCulture));
-                start.ArgumentList.Add("-b:v");
-                start.ArgumentList.Add("0");
+                start.ArgumentList.Add(settings.VideoEncoder is "h264_amf" or "hevc_amf" ? "cqp" : "vbr");
+                if (settings.VideoEncoder is "h264_amf" or "hevc_amf")
+                {
+                    start.ArgumentList.Add("-qp_i"); start.ArgumentList.Add(settings.Quality.ToString(CultureInfo.InvariantCulture));
+                    start.ArgumentList.Add("-qp_p"); start.ArgumentList.Add(settings.Quality.ToString(CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    start.ArgumentList.Add("-cq");
+                    start.ArgumentList.Add(settings.Quality.ToString(CultureInfo.InvariantCulture));
+                    start.ArgumentList.Add("-b:v");
+                    start.ArgumentList.Add("0");
+                }
             }
             else
             {
@@ -313,7 +512,10 @@ namespace ForgeFlow
                         $"y='max(0,min(ih-oh,(ih-oh)/2-{offsetY:0.###}*(ih-oh)/2))'");
                 }
                 int videoInput = videoInputs[clip.Id];
-                f.Append(CultureInfo.InvariantCulture, $"[{videoInput}:v]trim=start={sourceStart:0.###}:end={sourceEnd:0.###},setpts=PTS-STARTPTS{canvasFilter},fps={targetFrameRate:0.###},format=yuv420p,setsar=1,settb=AVTB[v{i}];");
+                // Keep the working pixel format intact. The previous hardcoded
+                // yuv420p conversion silently destroyed 10-bit export requests;
+                // the encoder's final -pix_fmt is now the single authority.
+                f.Append(CultureInfo.InvariantCulture, $"[{videoInput}:v]trim=start={sourceStart:0.###}:end={sourceEnd:0.###},setpts=PTS-STARTPTS{canvasFilter},fps={targetFrameRate:0.###},setsar=1,settb=AVTB[v{i}];");
             }
             for (int i = 0; i < video.Count; i++) f.Append($"[v{i}]");
             f.Append($"concat=n={video.Count}:v=1:a=0[basev];");
@@ -423,8 +625,10 @@ namespace ForgeFlow
                     string text = EscapeDrawText(clip.Text);
                     string fontFile = ResolveFontFile(clip.FontFamily);
                     double fontSize = clip.FontSize * (targetHeight > 0 ? targetHeight / 1080.0 : 1);
+                    string textX = clip.IsSubtitle ? "(w-text_w)/2" : $"w*{clip.X:0.####}";
+                    string subtitleBox = clip.IsSubtitle ? ":box=1:boxcolor=black@0.65:boxborderw=10" : "";
                     f.Append(CultureInfo.InvariantCulture,
-                        $"[{current}]drawtext=fontfile='{fontFile}':text='{text}':x=w*{clip.X:0.####}:y=h*{clip.Y:0.####}:fontsize={fontSize:0.#}:fontcolor={clip.Color}:borderw=2:bordercolor=black@0.75:enable='between(t,{outputStart:0.###},{outputEnd:0.###})'[{next}];");
+                        $"[{current}]drawtext=fontfile='{fontFile}':text='{text}':x={textX}:y=h*{clip.Y:0.####}:fontsize={fontSize:0.#}:fontcolor={clip.Color}:borderw=2:bordercolor=black@0.75{subtitleBox}:enable='between(t,{outputStart:0.###},{outputEnd:0.###})'[{next}];");
                 }
                 else
                 {
@@ -491,6 +695,14 @@ namespace ForgeFlow
             start.ArgumentList.Add("-of"); start.ArgumentList.Add("csv=p=0");
             start.ArgumentList.Add(source);
             using Process process = Process.Start(start) ?? throw new InvalidOperationException("تعذر تشغيل FFprobe.");
+            using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch { }
+            });
             string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
             return process.ExitCode == 0 && output.Contains("audio", StringComparison.OrdinalIgnoreCase);

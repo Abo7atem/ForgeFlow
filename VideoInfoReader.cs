@@ -12,6 +12,7 @@ namespace ForgeFlow
         public double Fps { get; init; }
         public double DurationSeconds { get; init; }
         public long SizeBytes { get; init; }
+        public DateTime LastWriteTimeUtc { get; init; }
         public bool HasAudio { get; init; }
 
         public string Summary =>
@@ -73,17 +74,19 @@ namespace ForgeFlow
             };
 
             using var process = new Process { StartInfo = psi };
-            process.Start();
+            if (!process.Start()) return null;
             Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(token);
             Task<string> stderrTask = process.StandardError.ReadToEndAsync(token);
             try
             {
                 await process.WaitForExitAsync(token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                return null;
+                if (!cancellationToken.IsCancellationRequested)
+                    return null;
+                throw;
             }
 
             string json = await stdoutTask.ConfigureAwait(false);
@@ -91,48 +94,70 @@ namespace ForgeFlow
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(json))
                 return null;
 
-            using JsonDocument doc = JsonDocument.Parse(json);
-            JsonElement root = doc.RootElement;
-            int width = 0;
-            int height = 0;
-            double fps = 0;
-            bool hasAudio = false;
-
-            if (root.TryGetProperty("streams", out JsonElement streams))
+            JsonDocument doc;
+            try
             {
-                foreach (JsonElement stream in streams.EnumerateArray())
+                doc = JsonDocument.Parse(json);
+            }
+            catch (JsonException)
+            {
+                // A truncated/invalid probe response should be treated as an
+                // unreadable media file, not crash the editor startup path.
+                return null;
+            }
+            using (doc)
+            {
+                JsonElement root = doc.RootElement;
+                int width = 0;
+                int height = 0;
+                double fps = 0;
+                bool hasAudio = false;
+
+                if (root.TryGetProperty("streams", out JsonElement streams))
                 {
-                    string type = stream.TryGetProperty("codec_type", out JsonElement codecType) ? codecType.GetString() ?? "" : "";
-                    if (type == "video" && width == 0)
+                    foreach (JsonElement stream in streams.EnumerateArray())
                     {
-                        width = stream.TryGetProperty("width", out JsonElement widthValue) ? widthValue.GetInt32() : 0;
-                        height = stream.TryGetProperty("height", out JsonElement heightValue) ? heightValue.GetInt32() : 0;
-                        string rate = stream.TryGetProperty("avg_frame_rate", out JsonElement avgRate) ? avgRate.GetString() ?? "" : "";
-                        fps = ParseFps(rate);
-                    }
-                    else if (type == "audio")
-                    {
-                        hasAudio = true;
+                        string type = stream.TryGetProperty("codec_type", out JsonElement codecType) ? codecType.GetString() ?? "" : "";
+                        if (type == "video" && width == 0)
+                        {
+                            width = stream.TryGetProperty("width", out JsonElement widthValue) ? widthValue.GetInt32() : 0;
+                            height = stream.TryGetProperty("height", out JsonElement heightValue) ? heightValue.GetInt32() : 0;
+                            string rate = stream.TryGetProperty("avg_frame_rate", out JsonElement avgRate) ? avgRate.GetString() ?? "" : "";
+                            fps = ParseFps(rate);
+                        }
+                        else if (type == "audio")
+                        {
+                            hasAudio = true;
+                        }
                     }
                 }
-            }
 
-            double duration = 0;
-            if (root.TryGetProperty("format", out JsonElement format) &&
-                format.TryGetProperty("duration", out JsonElement durationValue))
-            {
-                double.TryParse(durationValue.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out duration);
-            }
+                double duration = 0;
+                if (root.TryGetProperty("format", out JsonElement format) &&
+                    format.TryGetProperty("duration", out JsonElement durationValue))
+                {
+                    // FFprobe normally serializes duration as a string, but
+                    // builds configured for numeric JSON emit a Number here.
+                    // Accept both forms so a valid file is not reported as
+                    // unreadable solely because of the probe's JSON mode.
+                    string durationText = durationValue.ValueKind == JsonValueKind.Number
+                        ? durationValue.GetRawText()
+                        : durationValue.GetString() ?? string.Empty;
+                    double.TryParse(durationText, NumberStyles.Any, CultureInfo.InvariantCulture, out duration);
+                }
 
-            return new VideoInfo
-            {
-                Width = width,
-                Height = height,
-                Fps = fps,
-                DurationSeconds = duration,
-                SizeBytes = new FileInfo(videoPath).Length,
-                HasAudio = hasAudio
-            };
+                FileInfo sourceFile = new(videoPath);
+                return new VideoInfo
+                {
+                    Width = width,
+                    Height = height,
+                    Fps = fps,
+                    DurationSeconds = duration,
+                    SizeBytes = sourceFile.Length,
+                    LastWriteTimeUtc = sourceFile.LastWriteTimeUtc,
+                    HasAudio = hasAudio
+                };
+            }
         }
 
         private static double ParseFps(string value)

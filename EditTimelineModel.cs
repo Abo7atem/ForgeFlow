@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 
 namespace ForgeFlow
 {
@@ -16,7 +17,10 @@ namespace ForgeFlow
             public double Start { get; set; }
             public double End { get; set; }
             public double SourceOffset { get; set; }
-            public string Source { get; init; } = "";
+            // Source is mutable so a project can relink media after it has been
+            // moved to another drive or computer. The editor still treats it as
+            // immutable during normal clip editing.
+            public string Source { get; set; } = "";
             public string Text { get; set; } = "";
             public double X { get; set; } = 0.1;
             public double Y { get; set; } = 0.1;
@@ -25,6 +29,7 @@ namespace ForgeFlow
             public double FontSize { get; set; } = 42;
             public string FontFamily { get; set; } = "Arial";
             public string Color { get; set; } = "#FFFFFF";
+            public bool IsSubtitle { get; set; }
             public double Volume { get; set; } = 1.0;
             public double Speed { get; set; } = 1.0;
             public bool IsMuted { get; set; }
@@ -44,6 +49,7 @@ namespace ForgeFlow
                 SourceOffset = SourceOffset, Source = Source, Text = Text,
                 X = X, Y = Y, Width = Width, Height = Height,
                 FontSize = FontSize, FontFamily = FontFamily, Color = Color,
+                IsSubtitle = IsSubtitle,
                 Volume = Volume, Speed = Speed, IsMuted = IsMuted,
                 SourceDuration = SourceDuration,
                 HasVideoTransform = HasVideoTransform,
@@ -58,16 +64,136 @@ namespace ForgeFlow
         private readonly Stack<Snapshot> _undo = new();
         private readonly Stack<Snapshot> _redo = new();
         private readonly List<Clip> _clipboard = new();
+        // Interactive gestures (dragging, wheel-resizing, etc.) can generate
+        // dozens of model updates per second. Keep the initial snapshot until
+        // the gesture ends so one user action maps to one Undo step.
+        private bool _undoGroupOpen;
 
         public double Duration { get; private set; }
         public Guid? SelectedId { get; private set; }
         public IReadOnlyList<Clip> Clips => _clips;
         public Clip? SelectedClip => SelectedId is Guid id ? _clips.FirstOrDefault(c => c.Id == id) : null;
+        public event EventHandler? Changed;
+
+        // The editor performs some high-frequency gesture updates directly on
+        // Clip instances. This is the shared notification path for dirty state.
+        public void NotifyChanged() => Changed?.Invoke(this, EventArgs.Empty);
+
+        public bool ValidateCurrentState(out string error)
+        {
+            if (!double.IsFinite(Duration) || Duration <= 0 || Duration > MaxProjectDurationSeconds)
+            {
+                error = "مدة المشروع غير صالحة.";
+                return false;
+            }
+
+            if (_clips.Count == 0 || _clips.Count > 20_000 || !AreClipsValid(_clips, Duration))
+            {
+                error = "يحتوي الـTimeline على مقطع أو قيمة غير صالحة.";
+                return false;
+            }
+
+            error = "";
+            return true;
+        }
+
+        public string SaveJson()
+        {
+            var state = new ProjectState { Duration = Duration, SelectedId = SelectedId, Clips = _clips.Select(c => c.Copy()).ToList() };
+            return JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        public bool LoadJson(string json)
+        {
+            try
+            {
+                ProjectState? state = JsonSerializer.Deserialize<ProjectState>(json);
+                if (state?.Clips == null || state.Clips.Count == 0 ||
+                    !double.IsFinite(state.Duration) || state.Duration <= 0 || state.Duration > MaxProjectDurationSeconds)
+                    return false;
+                // A project file is user-editable JSON. Reject malformed geometry and
+                // timing before it reaches WPF/MediaElement; otherwise a single NaN,
+                // infinity, duplicate id, or out-of-range clip can make the timeline
+                // render at an invalid width or leave preview stuck at the end.
+                if (state.Clips.Count > 20_000 || !AreClipsValid(state.Clips, state.Duration))
+                    return false;
+                _clips.Clear();
+                _clips.AddRange(state.Clips.Select(c => c.Copy()));
+                Duration = Math.Max(0.04, state.Duration);
+                SelectedId = state.SelectedId is Guid id && _clips.Any(c => c.Id == id) ? id : _clips[0].Id;
+                _undo.Clear(); _redo.Clear(); _clipboard.Clear(); _undoGroupOpen = false;
+                Sort();
+                NotifyChanged();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private sealed class ProjectState
+        {
+            public double Duration { get; set; }
+            public Guid? SelectedId { get; set; }
+            public List<Clip> Clips { get; set; } = new();
+        }
+
+        private const double MaxProjectDurationSeconds = 7 * 24 * 60 * 60;
+
+        private static bool IsSafeTextColor(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || (value.Length != 7 && value.Length != 9) || value[0] != '#')
+                return false;
+            for (int i = 1; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                    return false;
+            }
+            return true;
+        }
+        private static bool AreClipsValid(IReadOnlyList<Clip> clips, double duration)
+        {
+            var ids = new HashSet<Guid>();
+            foreach (Clip clip in clips)
+            {
+                if (clip == null || clip.Id == Guid.Empty || !ids.Add(clip.Id)) return false;
+                if (!Enum.IsDefined(clip.Kind)) return false;
+                if (string.IsNullOrWhiteSpace(clip.Track) || clip.Track.Length > 32 ||
+                    clip.Track.Any(char.IsControl) || clip.Track.Any(char.IsWhiteSpace)) return false;
+                if (!double.IsFinite(clip.Start) || !double.IsFinite(clip.End) ||
+                    clip.Start < 0 || clip.End <= clip.Start || clip.End > duration + 0.001) return false;
+                if (!double.IsFinite(clip.SourceOffset) || clip.SourceOffset < 0) return false;
+                if (!double.IsFinite(clip.SourceDuration) || clip.SourceDuration < 0 ||
+                    clip.SourceDuration > MaxProjectDurationSeconds) return false;
+                if (!double.IsFinite(clip.Speed) || clip.Speed < 0.05 || clip.Speed > 16) return false;
+                if (!double.IsFinite(clip.Volume) || clip.Volume < 0 || clip.Volume > 4) return false;
+                if (!double.IsFinite(clip.X) || !double.IsFinite(clip.Y) ||
+                    !double.IsFinite(clip.Width) || !double.IsFinite(clip.Height) ||
+                    clip.X < -4 || clip.X > 4 || clip.Y < -4 || clip.Y > 4 ||
+                    clip.Width < 0.001 || clip.Width > 8 || clip.Height < 0.001 || clip.Height > 8) return false;
+                if (!double.IsFinite(clip.FontSize) || clip.FontSize < 1 || clip.FontSize > 1000) return false;
+                if (!double.IsFinite(clip.VideoScaleX) || !double.IsFinite(clip.VideoScaleY) ||
+                    !double.IsFinite(clip.VideoOffsetX) || !double.IsFinite(clip.VideoOffsetY) ||
+                    clip.VideoScaleX < 0.01 || clip.VideoScaleX > 16 ||
+                    clip.VideoScaleY < 0.01 || clip.VideoScaleY > 16 ||
+                    clip.VideoOffsetX < -16 || clip.VideoOffsetX > 16 ||
+                    clip.VideoOffsetY < -16 || clip.VideoOffsetY > 16) return false;
+                if (!double.IsFinite(clip.LensZoom) || clip.LensZoom < 1 || clip.LensZoom > 16) return false;
+                if (!double.IsFinite(clip.EffectStrength) || clip.EffectStrength < 0 || clip.EffectStrength > 100) return false;
+                if (clip.Kind is ClipKind.Video or ClipKind.Audio or ClipKind.Image &&
+                    string.IsNullOrWhiteSpace(clip.Source)) return false;
+                if (clip.Text?.Length > 20_000 || clip.FontFamily?.Length > 128 || clip.Color?.Length > 32) return false;
+                if (!IsSafeTextColor(clip.Color)) return false;
+            }
+            return true;
+        }
 
         public void Load(double duration, string source)
         {
             Duration = Math.Max(0.01, duration);
-            _clips.Clear(); _undo.Clear(); _redo.Clear(); _clipboard.Clear();
+            _clips.Clear(); _undo.Clear(); _redo.Clear(); _clipboard.Clear(); _undoGroupOpen = false;
             _clips.Add(new Clip { Track = "V1", Kind = ClipKind.Video, Start = 0, End = Duration, Source = source, SourceDuration = Duration });
             _clips.Add(new Clip { Track = "A1", Kind = ClipKind.Audio, Start = 0, End = Duration, Source = source, SourceDuration = Duration });
             SelectedId = _clips[0].Id;
@@ -116,6 +242,45 @@ namespace ForgeFlow
             return true;
         }
 
+        public int SplitAllAt(double at, bool linkedVideoAudio = true, IReadOnlySet<string>? lockedTracks = null)
+        {
+            at = Clamp(at);
+            List<Clip> candidates = _clips
+                .Where(c => at > c.Start + 0.001 && at < c.End - 0.001 &&
+                            (lockedTracks == null || !lockedTracks.Contains(c.Track)))
+                .OrderBy(c => c.Track, StringComparer.Ordinal)
+                .ToList();
+            List<Clip> targets;
+            if (!linkedVideoAudio)
+            {
+                Clip? selected = SelectedClip != null && candidates.Any(c => c.Id == SelectedClip.Id)
+                    ? SelectedClip
+                    : candidates.FirstOrDefault(c => c.Kind == ClipKind.Video) ?? candidates.FirstOrDefault();
+                targets = selected == null ? new List<Clip>() : new List<Clip> { selected };
+            }
+            else targets = candidates;
+            if (targets.Count == 0) return 0;
+
+            SaveUndo();
+            Guid? selectedRight = null;
+            foreach (Clip clip in targets)
+            {
+                double oldEnd = clip.End;
+                double rightOffset = clip.SourceOffset + (at - clip.Start) *
+                    (clip.Kind == ClipKind.Audio ? clip.Speed : 1);
+                clip.End = at;
+                Clip right = clip.Copy(true);
+                right.Start = at;
+                right.End = oldEnd;
+                right.SourceOffset = rightOffset;
+                _clips.Add(right);
+                if (clip.Id == SelectedId) selectedRight = right.Id;
+            }
+            if (selectedRight is Guid id) SelectedId = id;
+            Sort();
+            return targets.Count;
+        }
+
         public bool DeleteSelected(bool linkedVideoAudio = true)
         {
             Clip? selected = SelectedClip;
@@ -123,14 +288,16 @@ namespace ForgeFlow
             SaveUndo();
             double deletedStart = selected.Start;
             double deletedEnd = selected.End;
-            bool rippleDelete = selected.Track == "V1" || (selected.Track == "A1" && linkedVideoAudio);
-            if (linkedVideoAudio && IsPrimaryMedia(selected))
+            bool linkedPrimary = linkedVideoAudio && IsPrimaryMedia(selected);
+            bool rippleDelete = selected.Kind is ClipKind.Video or ClipKind.Audio;
+            string? rippleTrack = linkedPrimary ? null : selected.Track;
+            if (linkedPrimary)
                 _clips.RemoveAll(c => IsPrimaryMedia(c) &&
                     Math.Abs(c.Start - selected.Start) < 0.001 && Math.Abs(c.End - selected.End) < 0.001 &&
                     Math.Abs(c.SourceOffset - selected.SourceOffset) < 0.001 &&
                     string.Equals(c.Source, selected.Source, StringComparison.OrdinalIgnoreCase));
             else _clips.Remove(selected);
-            if (rippleDelete) RippleCloseGap(deletedStart, deletedEnd);
+            if (rippleDelete) RippleCloseGap(deletedStart, deletedEnd, trackFilter: rippleTrack);
             SelectedId = null;
             Sort();
             return true;
@@ -149,23 +316,33 @@ namespace ForgeFlow
             return true;
         }
 
-        public bool PasteAt(double at)
+        public bool PasteAt(double at, bool linkedVideoAudio = true)
         {
             if (_clipboard.Count == 0) return false;
             SaveUndo();
             double clipboardStart = _clipboard.Min(c => c.Start);
             double clipboardEnd = _clipboard.Max(c => c.End);
             double groupLength = clipboardEnd - clipboardStart;
-            bool primaryGroup = _clipboard.Any(IsPrimaryMedia);
-            double pasteStart = primaryGroup
+            bool primaryGroup = linkedVideoAudio && _clipboard.Any(IsPrimaryMedia);
+            string? isolatedPrimaryTrack = !linkedVideoAudio
+                ? _clipboard.Select(c => c.Track).FirstOrDefault(IsPrimaryTrack)
+                : null;
+            bool isolatedPrimaryInsert = isolatedPrimaryTrack != null;
+            double pasteStart = primaryGroup || isolatedPrimaryInsert
                 ? Math.Clamp(at, 0, Duration)
                 : Math.Clamp(at, 0, Math.Max(0, Duration - 0.04));
 
-            if (primaryGroup)
+            if (primaryGroup || isolatedPrimaryInsert)
             {
-                // Insert edit: preserve the linked picture/sound pair and ripple everything
-                // to the right, instead of creating overlapping V1 clips that cannot export.
-                foreach (Clip primary in _clips.Where(c => IsPrimaryMedia(c) && pasteStart > c.Start + 0.001 && pasteStart < c.End - 0.001).ToList())
+                // Insert edit: split the affected track(s) at the insertion point first,
+                // then ripple only the tracks participating in this paste. This keeps an
+                // unlinked audio paste from moving the picture track (and vice versa).
+                IEnumerable<Clip> splitCandidates = primaryGroup
+                    ? _clips.Where(c => IsPrimaryMedia(c))
+                    : _clips.Where(c => c.Track == isolatedPrimaryTrack);
+                foreach (Clip primary in splitCandidates
+                    .Where(c => pasteStart > c.Start + 0.001 && pasteStart < c.End - 0.001)
+                    .ToList())
                 {
                     double oldEnd = primary.End;
                     Clip right = primary.Copy(true);
@@ -177,17 +354,20 @@ namespace ForgeFlow
                 }
                 foreach (Clip existing in _clips.ToList())
                 {
-                    if (existing.Start >= pasteStart - 0.001)
+                    bool affected = primaryGroup
+                        ? true
+                        : existing.Track == isolatedPrimaryTrack;
+                    if (affected && existing.Start >= pasteStart - 0.001)
                     {
                         existing.Start += groupLength;
                         existing.End += groupLength;
                     }
-                    else if (!IsPrimaryMedia(existing) && existing.End > pasteStart)
+                    else if (primaryGroup && !IsPrimaryMedia(existing) && existing.End > pasteStart)
                     {
                         existing.End += groupLength;
                     }
                 }
-                Duration += groupLength;
+                if (primaryGroup) Duration += groupLength;
             }
 
             Guid? selected = null;
@@ -198,7 +378,7 @@ namespace ForgeFlow
                 double length = stored.End - stored.Start;
                 pasted.Start = pasteStart + relativeStart;
                 pasted.End = pasted.Start + length;
-                if (!primaryGroup) pasted.End = Math.Min(Duration, pasted.End);
+                if (!primaryGroup && !isolatedPrimaryInsert) pasted.End = Math.Min(Duration, pasted.End);
                 if (pasted.End <= pasted.Start + 0.001) continue;
                 if (pasted.Kind == ClipKind.Image) pasted.Track = NextAvailableTrack("I", 1, pasted.Start, pasted.End);
                 else if (pasted.Kind == ClipKind.Text) pasted.Track = NextAvailableTrack("T", 1, pasted.Start, pasted.End);
@@ -209,6 +389,8 @@ namespace ForgeFlow
                 if (stored.Kind == ClipKind.Video || selected == null) selected = pasted.Id;
             }
             if (selected == null) { _undo.Pop(); return false; }
+            if (isolatedPrimaryInsert)
+                Duration = Math.Max(0.04, _clips.Count == 0 ? 0 : _clips.Max(clip => clip.End));
             SelectedId = selected;
             Sort();
             return true;
@@ -220,7 +402,7 @@ namespace ForgeFlow
             if (linkedVideoAudio && IsPrimaryMedia(selected))
             {
                 CopySelected(linkedVideoAudio: true);
-                return PasteAt(at);
+                return PasteAt(at, linkedVideoAudio: true);
             }
             SaveUndo();
             Clip duplicate = selected.Copy(true);
@@ -264,7 +446,8 @@ namespace ForgeFlow
                 else clip.End = at;
             }
 
-            RippleCloseGap(removedStart, removedEnd, trimBefore ? targets.Select(c => c.Id).ToHashSet() : null);
+            string? rippleTrack = linkedVideoAudio && IsPrimaryMedia(selected) ? null : selected.Track;
+            RippleCloseGap(removedStart, removedEnd, trimBefore ? targets.Select(c => c.Id).ToHashSet() : null, rippleTrack);
             Sort();
             return true;
         }
@@ -365,6 +548,37 @@ namespace ForgeFlow
             _clips.Add(clip); SelectedId = clip.Id; Sort(); return clip;
         }
 
+        public int AddSubtitleCues(IReadOnlyList<SubtitleCue> cues, double fontSize = 48)
+        {
+            if (cues == null || cues.Count == 0 || Duration <= 0) return 0;
+            var usable = cues.Where(cue => double.IsFinite(cue.Start) && double.IsFinite(cue.End) &&
+                                          cue.End > cue.Start && !string.IsNullOrWhiteSpace(cue.Text)).ToList();
+            if (usable.Count == 0) return 0;
+
+            SaveUndo();
+            int added = 0;
+            foreach (SubtitleCue cue in usable)
+            {
+                double start = Math.Clamp(cue.Start, 0, Math.Max(0, Duration - 0.04));
+                double end = Math.Min(Duration, cue.End);
+                if (end - start < 0.04) continue;
+                var subtitle = new Clip
+                {
+                    Track = NextAvailableTrack("T", 1, start, end), Kind = ClipKind.Text,
+                    Text = cue.Text, Start = start, End = end, X = 0.08, Y = 0.76,
+                    Width = 0.84, Height = 0.16, FontSize = Math.Clamp(fontSize, 20, 96),
+                    Color = "#FFFFFF", IsSubtitle = true
+                };
+                _clips.Add(subtitle);
+                SelectedId = subtitle.Id;
+                added++;
+            }
+
+            if (added == 0) return 0;
+            Sort();
+            NotifyChanged();
+            return added;
+        }
         public Clip AddLens(double at, double length = 5)
         {
             SaveUndo();
@@ -468,6 +682,7 @@ namespace ForgeFlow
             if (clip.Track != "A1" && clip.Track.StartsWith("A", StringComparison.Ordinal) && clip.SourceDuration > 0)
                 clip.End = Math.Min(Duration, clip.Start + (clip.SourceDuration - clip.SourceOffset) / clip.Speed);
             Sort();
+            NotifyChanged();
             return true;
         }
 
@@ -477,10 +692,24 @@ namespace ForgeFlow
             if (clips.Count == 0 || clips.All(c => c.IsMuted == muted)) return false;
             SaveUndo();
             foreach (Clip clip in clips) clip.IsMuted = muted;
+            NotifyChanged();
             return true;
         }
 
-        public void BeginUndoGroup() => SaveUndo();
+        public void BeginUndoGroup()
+        {
+            if (_undoGroupOpen) return;
+            SaveUndo();
+            _undoGroupOpen = true;
+        }
+
+        public void EndUndoGroup() => _undoGroupOpen = false;
+
+        public void CancelUndoGroup()
+        {
+            if (_undoGroupOpen && _undo.Count > 0) _undo.Pop();
+            _undoGroupOpen = false;
+        }
 
         public bool UpdateLens(Guid id, double x, double y, double size, double zoom)
         {
@@ -490,6 +719,7 @@ namespace ForgeFlow
             clip.Y = Math.Clamp(y, 0, 1);
             clip.Width = clip.Height = Math.Clamp(size, 0.08, 0.60);
             clip.LensZoom = Math.Clamp(zoom, 2, 6);
+            NotifyChanged();
             return true;
         }
 
@@ -498,10 +728,11 @@ namespace ForgeFlow
             Clip? clip = _clips.FirstOrDefault(c => c.Id == id && c.Kind == ClipKind.Blur);
             if (clip == null) return false;
             clip.EffectStrength = Math.Clamp(strength, 0, 50);
+            NotifyChanged();
             return true;
         }
 
-        public bool UpdateVideoTransform(Guid id, double scaleX, double scaleY, double offsetX, double offsetY)
+        public bool UpdateVideoTransform(Guid id, double scaleX, double scaleY, double offsetX, double offsetY, bool saveUndo = true)
         {
             Clip? clip = _clips.FirstOrDefault(c => c.Id == id && c.Kind == ClipKind.Video);
             if (clip == null) return false;
@@ -513,21 +744,35 @@ namespace ForgeFlow
                 Math.Abs(clip.VideoScaleX - scaleX) < 0.001 && Math.Abs(clip.VideoScaleY - scaleY) < 0.001 &&
                 Math.Abs(clip.VideoOffsetX - offsetX) < 0.001 && Math.Abs(clip.VideoOffsetY - offsetY) < 0.001)
                 return false;
-            SaveUndo();
+            if (saveUndo) SaveUndo();
             clip.HasVideoTransform = true;
             clip.VideoScaleX = scaleX;
             clip.VideoScaleY = scaleY;
             clip.VideoOffsetX = offsetX;
             clip.VideoOffsetY = offsetY;
+            NotifyChanged();
             return true;
         }
 
-        public bool Undo() => Restore(_undo, _redo);
-        public bool Redo() => Restore(_redo, _undo);
+        public bool Undo()
+        {
+            _undoGroupOpen = false;
+            bool restored = Restore(_undo, _redo);
+            if (restored) NotifyChanged();
+            return restored;
+        }
+
+        public bool Redo()
+        {
+            _undoGroupOpen = false;
+            bool restored = Restore(_redo, _undo);
+            if (restored) NotifyChanged();
+            return restored;
+        }
         public IEnumerable<Clip> ActiveOverlays(double at) => _clips.Where(c =>
             (c.Kind == ClipKind.Image || c.Kind == ClipKind.Text) && at >= c.Start && at < c.End);
 
-        private void SaveUndo() { _undo.Push(Capture()); _redo.Clear(); }
+        private void SaveUndo() { _undo.Push(Capture()); _redo.Clear(); _undoGroupOpen = false; }
         private Snapshot Capture() => new(_clips.Select(c => c.Copy()).ToList(), SelectedId, Duration);
 
         private bool Restore(Stack<Snapshot> source, Stack<Snapshot> destination)
@@ -541,12 +786,14 @@ namespace ForgeFlow
             return true;
         }
 
-        private void RippleCloseGap(double start, double end, HashSet<Guid>? preserved = null)
+        private void RippleCloseGap(double start, double end, HashSet<Guid>? preserved = null, string? trackFilter = null)
         {
             double gap = Math.Max(0, end - start);
             if (gap <= 0) return;
             foreach (Clip clip in _clips.ToList())
             {
+                if (trackFilter != null && !string.Equals(clip.Track, trackFilter, StringComparison.Ordinal))
+                    continue;
                 if (preserved?.Contains(clip.Id) == true)
                 {
                     clip.Start = Math.Max(0, clip.Start - gap);
@@ -576,11 +823,14 @@ namespace ForgeFlow
                     _clips.Remove(clip);
                 }
             }
-            Duration = Math.Max(0.04, Duration - gap);
+            Duration = trackFilter == null
+                ? Math.Max(0.04, Duration - gap)
+                : Math.Max(0.04, _clips.Count == 0 ? 0 : _clips.Max(clip => clip.End));
         }
 
         private void Sort() => _clips.Sort((a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : string.CompareOrdinal(a.Track, b.Track));
         private static bool IsPrimaryMedia(Clip clip) => clip.Track is "V1" or "A1";
+        private static bool IsPrimaryTrack(string? track) => track is "V1" or "A1";
 
         private Clip? FindLinkedPrimary(Clip clip)
         {

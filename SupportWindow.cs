@@ -47,21 +47,21 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "ForgeFlow includes 3 full-feature trial attempts. Activate a license for unlimited processing after trial.",
+                Text = "ForgeFlow is free and open source. There are no accounts, activation keys, or processing limits.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
             });
 
             root.Children.Add(CreateCard(
-                "Current plan",
+                "Free software",
                 planStatus,
-                "Trial includes 3 full-feature processing attempts. License activation removes the attempt limit."));
+                "The MIT license permits use, modification, and redistribution. Keep the copyright and license notice with copies."));
 
             root.Children.Add(CreateCard(
-                "Why support",
-                "Your support funds updates, bundled tools, model maintenance, and faster feature delivery.",
-                "This page can later host a light sponsor message or partner placement without interrupting processing."));
+                "Credit and community",
+                "Help others find ForgeFlow and share improvements with the community.",
+                "The project credit and license terms are in the source repository."));
 
             var buttons = new WrapPanel
             {
@@ -70,8 +70,8 @@ namespace ForgeFlow
                 Orientation = Orientation.Horizontal
             };
 
-            buttons.Children.Add(CreateActionButton("Buy License", "https://creators.sa/a7atem"));
-            buttons.Children.Add(CreateActionButton("Support Project", "https://creators.sa/a7atem"));
+            buttons.Children.Add(CreateActionButton("Source code", "https://github.com/Abo7atem/ForgeFlow"));
+            buttons.Children.Add(CreateActionButton("Follow on X", "https://x.com/abo_7atemm"));
             buttons.Children.Add(CreateActionButton("YouTube", "https://youtube.com/@bo_7atemm"));
             buttons.Children.Add(CreateActionButton("Discord", "https://discord.gg/jF5uNEyg8r"));
 

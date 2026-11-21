@@ -1,8 +1,13 @@
 using Microsoft.Win32;
 using System;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -25,6 +30,7 @@ namespace ForgeFlow
         private readonly VideoEditOptions _options;
         private readonly EditTimelineModel _model = new();
         private readonly MediaElement _media = new() { LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Stop, Stretch = Stretch.Fill, ScrubbingEnabled = true, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        private readonly MediaElement _primaryAudioPlayer = new() { LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Stop, ScrubbingEnabled = true, Opacity = 0, Width = 1, Height = 1, IsHitTestVisible = false };
         private readonly Dictionary<Guid, MediaElement> _audioPlayers = new();
         private readonly Dictionary<Guid, string> _loadedAudioSources = new();
         private readonly Canvas _videoCanvas = new() { ClipToBounds = false, IsHitTestVisible = false };
@@ -50,6 +56,7 @@ namespace ForgeFlow
         private readonly TextBlock _status = new() { Foreground = Brushes.LightGray, VerticalAlignment = VerticalAlignment.Center };
         private readonly StackPanel _properties = new() { Margin = new Thickness(12) };
         private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(40) };
+        private readonly DispatcherTimer _autosaveTimer = new() { Interval = TimeSpan.FromSeconds(30) };
         private readonly Dictionary<Guid, FrameworkElement> _overlayElements = new();
         private readonly CheckBox _linked = new() { Content = "ربط V1 + A1", IsChecked = true, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0) };
         private bool _playing;
@@ -111,9 +118,39 @@ namespace ForgeFlow
         private Button? _snapButton;
         private bool _initialMediaLoaded;
         private string? _loadedVideoSource;
+        private string? _loadedPrimaryAudioSource;
+        private string? _proxySourcePath;
+        private string? _proxyPreviewPath;
         private double? _pendingVideoPosition;
         private bool _resumeAfterVideoLoad;
         private bool _handlingPlaybackBoundary;
+        private string? _projectFilePath;
+        private CancellationTokenSource? _proxyCancellation;
+        private bool _projectDirty;
+
+        private sealed class EditorProjectFile
+        {
+            public int Width { get; set; }
+            public int Height { get; set; }
+            public double FrameRate { get; set; }
+            public string Timeline { get; set; } = "";
+            public List<MediaManifestEntry> Media { get; set; } = new();
+            public List<double> Markers { get; set; } = new();
+            public List<string> LockedTracks { get; set; } = new();
+            public List<string> HiddenTracks { get; set; } = new();
+            public List<string> MutedAudioTracks { get; set; } = new();
+            public bool LinkedVideoAudio { get; set; } = true;
+            public bool PrimaryAudioMuted { get; set; }
+        }
+
+        private sealed class MediaManifestEntry
+        {
+            public string OriginalPath { get; set; } = "";
+            public string RelativePath { get; set; } = "";
+            // A lightweight identity guard for automatic relink. It prevents
+            // silently binding a same-named file from another recording.
+            public long LengthBytes { get; set; }
+        }
 
         private sealed class TrimContext
         {
@@ -136,6 +173,7 @@ namespace ForgeFlow
 
         public LiveEditorWindow(string path, VideoEditOptions options)
         {
+            CleanupStaleProxyCache();
             _sourcePath = path;
             _options = options;
             _projectMedia.Add(System.IO.Path.GetFullPath(path));
@@ -153,6 +191,7 @@ namespace ForgeFlow
             Resources[typeof(ComboBoxItem)] = CreateEditorComboBoxItemStyle();
             Resources[typeof(Slider)] = CreateEditorSliderStyle();
             Content = BuildLayout();
+            _programFrame.Children.Insert(0, _primaryAudioPlayer);
 
             _media.MediaOpened += MediaOpened;
             _media.MediaFailed += (_, args) => _status.Text = "تعذر فتح الفيديو في المعاينة: " + (args.ErrorException?.Message ?? "خطأ وسائط غير معروف");
@@ -176,6 +215,7 @@ namespace ForgeFlow
                 _media.Play();
             };
             _clock.Tick += (_, _) => Tick();
+            _autosaveTimer.Tick += (_, _) => AutosaveProject();
             _timeline.PreviewMouseLeftButtonDown += (_, _) => _scrubbing = true;
             _timeline.PreviewMouseLeftButtonUp += (_, _) => { _scrubbing = false; Seek(_timeline.Value); };
             _timeline.ValueChanged += (_, _) => { if (_scrubbing) Seek(_timeline.Value); UpdatePlayhead(); };
@@ -187,6 +227,7 @@ namespace ForgeFlow
             _timelineScroll.ScrollChanged += (_, e) =>
             {
                 if (Math.Abs(e.VerticalChange) > 0.01) _trackLabelsScroll.ScrollToVerticalOffset(e.VerticalOffset);
+                if (Math.Abs(e.HorizontalChange) > 0.01) RenderTimeline();
             };
             _zoom.ValueChanged += (_, _) =>
             {
@@ -209,9 +250,13 @@ namespace ForgeFlow
             DragOver += EditorDragOver;
             Drop += EditorDrop;
             PreviewKeyDown += HandleKeys;
+            Closing += EditorClosing;
             Closed += (_, _) =>
             {
-                _clock.Stop(); _media.Stop();
+                try { _proxyCancellation?.Cancel(); } catch { }
+                try { _proxyCancellation?.Dispose(); } catch { }
+                _clock.Stop(); _autosaveTimer.Stop(); _media.Stop();
+                _primaryAudioPlayer.Stop();
                 foreach (MediaElement player in _audioPlayers.Values) player.Stop();
             };
         }
@@ -268,9 +313,18 @@ namespace ForgeFlow
                     string value = item.Tag?.ToString() ?? "source";
                     _projectFrameRate = value == "30" ? 30 : value == "60" ? 60 : NormalizeProjectFrameRate(_sourceFrameRate);
                     UpdateSequenceBadge();
+                    MarkProjectDirty();
                     _status.Text = $"معدل إطارات المشروع: {_projectFrameRate:0.##} FPS";
                 }
             };
+            var openProject = ToolButton("فتح مشروع", OpenProjectClicked);
+            openProject.ToolTip = "فتح مشروع ForgeFlow محفوظ (.forgeflow.json) — Ctrl+O";
+            var saveProject = ToolButton("حفظ مشروع", SaveProjectClicked);
+            saveProject.ToolTip = "حفظ التايملاين والإعدادات الحالية — Ctrl+S";
+            var proxy = ToolButton("Proxy 720p", CreateProxyClicked);
+            proxy.ToolTip = "إنشاء نسخة معاينة خفيفة لتحرير 4K/8K بسلاسة؛ التصدير يبقى من المصدر الأصلي.";
+            var relink = ToolButton("Relink Media", RelinkMissingMediaClicked);
+            relink.ToolTip = "إعادة ربط الملفات المفقودة بعد نقل المشروع إلى مجلد أو جهاز آخر.";
             var export = ToolButton("تصدير المشروع  MP4", ExportClicked);
             export.Background = new SolidColorBrush(Color.FromRgb(225, 105, 0)); export.Foreground = Brushes.White;
             export.MinWidth = 170; export.Height = 36; export.FontWeight = FontWeights.SemiBold;
@@ -280,6 +334,10 @@ namespace ForgeFlow
             actions.Children.Add(new TextBlock { Text = "الإطارات", Foreground = Brushes.LightGray, VerticalAlignment = VerticalAlignment.Center });
             actions.Children.Add(_frameRatePreset);
             actions.Children.Add(_sequenceBadge);
+            actions.Children.Add(openProject);
+            actions.Children.Add(saveProject);
+            actions.Children.Add(proxy);
+            actions.Children.Add(relink);
             actions.Children.Add(export);
             DockPanel.SetDock(actions, Dock.Right); dock.Children.Add(actions);
             return dock;
@@ -300,6 +358,10 @@ namespace ForgeFlow
             importMedia.Margin = new Thickness(0, 10, 0, 8);
             importMedia.HorizontalAlignment = HorizontalAlignment.Stretch;
             project.Children.Add(importMedia);
+            Button relinkMedia = ToolButton("إعادة ربط الوسائط المفقودة", RelinkMissingMediaClicked);
+            relinkMedia.HorizontalAlignment = HorizontalAlignment.Stretch;
+            relinkMedia.Margin = new Thickness(0, 0, 0, 8);
+            project.Children.Add(relinkMedia);
             project.Children.Add(new ScrollViewer
             {
                 Content = _mediaBin, MinHeight = 110, MaxHeight = 260,
@@ -359,7 +421,7 @@ namespace ForgeFlow
             var commandArea = new DockPanel { Margin = new Thickness(6, 4, 6, 4), LastChildFill = true };
             var editTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             editTools.Children.Add(ToolModeButton(EditorTool.Selection, "➤", "أداة التحديد (V)"));
-            editTools.Children.Add(CompactToolButton("✂ C", "قص المقطع المحدد عند رأس التشغيل (C)", (_, _) => Split()));
+            editTools.Children.Add(CompactToolButton("✂ C", "Blade: قص المقاطع تحت رأس التشغيل في المسارات غير المقفلة (C)", (_, _) => Split()));
             editTools.Children.Add(ToolModeButton(EditorTool.Hand, "✋", "أداة اليد (H) — اسحب التايم لاين أفقيًا"));
             editTools.Children.Add(TimelineDivider());
             editTools.Children.Add(CompactToolButton("↶", "تراجع (Ctrl+Z)", (_, _) => { if (_model.Undo()) RefreshEditor(); }));
@@ -384,6 +446,7 @@ namespace ForgeFlow
             {
                 _linked.IsChecked = _linked.IsChecked != true;
                 UpdateToggleButton(linkButton, _linked.IsChecked == true);
+                MarkProjectDirty();
                 _status.Text = _linked.IsChecked == true ? "تم ربط الفيديو بصوته الأصلي V1 + A1." : "تم فصل A1 عن V1 ويمكن قص الصوت أو تحريكه مستقلًا.";
             });
             UpdateToggleButton(linkButton, true);
@@ -392,7 +455,7 @@ namespace ForgeFlow
 
             var transport = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
             transport.Children.Add(CompactToolButton("|◀", "الانتقال إلى القطع السابق (Up)", (_, _) => GoToEdit(false)));
-            transport.Children.Add(CompactToolButton("◀", "إطار للخلف (Left)", (_, _) => Seek(_timeline.Value - 1.0 / 30)));
+            transport.Children.Add(CompactToolButton("◀", "إطار للخلف (Left)", (_, _) => Seek(_timeline.Value - FrameStep())));
             transport.Children.Add(CompactToolButton("▶", "تشغيل/إيقاف (Space)", (_, _) => Toggle()));
             transport.Children.Add(CompactToolButton("▶|", "الانتقال إلى القطع التالي (Down)", (_, _) => GoToEdit(true)));
             transport.Children.Add(TimelineDivider());
@@ -506,6 +569,7 @@ namespace ForgeFlow
                     _model.SetAudioTrackMuted(track, _audioMuted);
                     _media.IsMuted = _audioMuted;
                     visibility.Content = _audioMuted ? "🔇" : "🔊";
+                    MarkProjectDirty();
                 }
                 else if (audioTrack)
                 {
@@ -513,6 +577,7 @@ namespace ForgeFlow
                     _model.SetAudioTrackMuted(track, _mutedAudioTracks.Contains(track));
                     visibility.Content = _mutedAudioTracks.Contains(track) ? "🔇" : "🔊";
                     SyncExtraAudio(_timeline.Value, _playing);
+                    MarkProjectDirty();
                 }
                 else
                 {
@@ -520,17 +585,23 @@ namespace ForgeFlow
                     visibility.Content = _hiddenTracks.Contains(track) ? "⊘" : "◉";
                     if (track == "V1") _media.Visibility = _hiddenTracks.Contains("V1") ? Visibility.Hidden : Visibility.Visible;
                     UpdateOverlayVisibility();
+                    MarkProjectDirty();
                 }
             });
             visibility.MinWidth = 28; visibility.Width = 28; visibility.Padding = new Thickness(0); visibility.ToolTip = audioTrack ? "كتم المسار الصوتي" : "إظهار/إخفاء المسار";
             Grid.SetColumn(visibility, 1); grid.Children.Add(visibility);
+            visibility.Content = audioTrack
+                ? (_mutedAudioTracks.Contains(track) || (track == "A1" && _audioMuted) ? "🔇" : "🔊")
+                : (_hiddenTracks.Contains(track) ? "⊘" : "◉");
             Button lockButton = null!;
             lockButton = ToolButton("🔓", (_, _) =>
             {
                 if (!_lockedTracks.Add(track)) _lockedTracks.Remove(track);
                 lockButton.Content = _lockedTracks.Contains(track) ? "🔒" : "🔓";
+                MarkProjectDirty();
                 _status.Text = _lockedTracks.Contains(track) ? $"تم قفل المسار {track}" : $"تم فتح المسار {track}";
             });
+            lockButton.Content = _lockedTracks.Contains(track) ? "🔒" : "🔓";
             lockButton.MinWidth = 28; lockButton.Width = 28; lockButton.Padding = new Thickness(0); lockButton.ToolTip = "قفل/فتح المسار";
             Grid.SetColumn(lockButton, 2); grid.Children.Add(lockButton);
             return grid;
@@ -613,7 +684,8 @@ namespace ForgeFlow
             double proposed = _moveContext.OriginalStart + PixelsToSeconds(_moveContext.Pixels);
             proposed = Math.Clamp(proposed, 0, Math.Max(0, _model.Duration - length));
             proposed = SnapTime(proposed, _moveContext.ClipId, length);
-            bool changed = _model.MoveSelected(proposed, _linked.IsChecked == true);
+            EditTimelineModel.Clip? movingClip = _model.Clips.FirstOrDefault(c => c.Id == _moveContext.ClipId);
+            bool changed = movingClip != null && _model.MoveSelected(proposed, UseLinkedPrimary(movingClip));
             _moveContext = null;
             if (changed) { RefreshEditor(); _status.Text = "تم تحريك المقطع. Ctrl+Z للتراجع."; }
             else RenderTimeline();
@@ -688,7 +760,8 @@ namespace ForgeFlow
             double boundary = _trimContext.StartEdge
                 ? Math.Clamp(_trimContext.OriginalStart + seconds, _trimContext.OriginalStart, _trimContext.OriginalEnd - 0.04)
                 : Math.Clamp(_trimContext.OriginalEnd + seconds, _trimContext.OriginalStart + 0.04, _trimContext.OriginalEnd);
-            bool changed = _model.TrimSelected(boundary, _trimContext.StartEdge, _linked.IsChecked == true);
+            EditTimelineModel.Clip? trimmingClip = _model.Clips.FirstOrDefault(c => c.Id == _trimContext.ClipId);
+            bool changed = trimmingClip != null && _model.TrimSelected(boundary, _trimContext.StartEdge, UseLinkedPrimary(trimmingClip));
             _trimContext = null;
             if (changed) { RefreshEditor(); _status.Text = "تم قص طرف المقطع. Ctrl+Z للتراجع."; }
             else RenderTimeline();
@@ -715,20 +788,25 @@ namespace ForgeFlow
             _initialMediaLoaded = true;
             _sourceWidth = _activeVideoWidth;
             _sourceHeight = _activeVideoHeight;
-            ApplyCanvasPreset();
+            ApplyCanvasPreset(markDirty: false);
             _model.Load(_media.NaturalDuration.TimeSpan.TotalSeconds, _sourcePath);
             _timeline.Maximum = _model.Duration;
             _time.Text = FormatTime(0) + " / " + FormatTime(_model.Duration);
             _status.Text = "جاهز للتحرير — تم إنشاء مساري V1 و A1 ويمكن تقسيمهما معًا أو إلغاء الربط.";
-            RefreshEditor();
+            _projectDirty = false;
+            RefreshEditor(markDirty: false);
+            _model.Changed += (_, _) => MarkProjectDirty();
+            _autosaveTimer.Start();
+            TryRestoreAutosave();
             _media.Play(); _media.Pause();
         }
 
-        private void RefreshEditor()
+        private void RefreshEditor(bool markDirty = true)
         {
             _timeline.Maximum = _model.Duration;
             if (_timeline.Value > _model.Duration) Seek(_model.Duration);
             _time.Text = FormatTime(Math.Min(_timeline.Value, _model.Duration)) + " / " + FormatTime(_model.Duration);
+            SyncTrackMuteStateFromModel();
             HashSet<Guid> existingAudio = _model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Audio && c.Track != "A1").Select(c => c.Id).ToHashSet();
             foreach (Guid staleId in _audioPlayers.Keys.Where(id => !existingAudio.Contains(id)).ToList())
             {
@@ -742,9 +820,24 @@ namespace ForgeFlow
             RenderOverlays();
             ShowProperties();
             if (_initialMediaLoaded) Seek(Math.Min(_timeline.Value, _model.Duration));
+            if (markDirty) MarkProjectDirty();
         }
 
-        private void ApplyCanvasPreset()
+        private void SyncTrackMuteStateFromModel()
+        {
+            _mutedAudioTracks.Clear();
+            foreach (string track in _model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Audio && c.Track != "A1")
+                         .Select(c => c.Track).Distinct(StringComparer.Ordinal))
+            {
+                if (_model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Audio && c.Track == track).All(c => c.IsMuted))
+                    _mutedAudioTracks.Add(track);
+            }
+            List<EditTimelineModel.Clip> primary = _model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Audio && c.Track == "A1").ToList();
+            if (primary.Count > 0) _audioMuted = primary.All(c => c.IsMuted);
+            _media.IsMuted = _audioMuted;
+        }
+
+        private void ApplyCanvasPreset(bool markDirty = true)
         {
             string preset = (_canvasPreset.SelectedItem as ComboBoxItem)?.Tag as string ?? "source";
             (_projectWidth, _projectHeight) = preset switch
@@ -759,6 +852,7 @@ namespace ForgeFlow
             UpdateSequenceBadge();
             UpdateProgramFrameSize();
             PositionOverlays();
+            if (markDirty) MarkProjectDirty();
             _status.Text = $"مقاس المشروع: {_projectWidth}×{_projectHeight}";
         }
 
@@ -819,11 +913,17 @@ namespace ForgeFlow
             double height = Math.Max(290, _visibleTracks.Count * rowHeight);
             _tracksCanvas.Height = height;
             _trackLabels.Height = height;
+            // Retain the full-width canvas for precise seeking, but only
+            // materialize timeline decorations and clips around the viewport.
+            double secondsPerPixel = _model.Duration / Math.Max(1, width);
+            double visibleStart = Math.Max(0, _timelineScroll.HorizontalOffset * secondsPerPixel - 2 * secondsPerPixel);
+            double visibleEnd = Math.Min(_model.Duration, (_timelineScroll.HorizontalOffset + viewport) * secondsPerPixel + 2 * secondsPerPixel);
             for (int i = 1; i < _visibleTracks.Count; i++)
                 _tracksCanvas.Children.Add(new Line { X1 = 0, X2 = width, Y1 = rowHeight * i, Y2 = rowHeight * i, Stroke = new SolidColorBrush(Color.FromRgb(52, 52, 56)), StrokeThickness = 1 });
             int rulerStep = _zoom.Value >= 150 ? 1 : _zoom.Value >= 75 ? 2 : 5;
             for (int second = 0; second <= _model.Duration; second += rulerStep)
             {
+                if (second < visibleStart - rulerStep || second > visibleEnd + rulerStep) continue;
                 double x = second / _model.Duration * width;
                 _tracksCanvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = 0, Y2 = 7, Stroke = Brushes.Gray, StrokeThickness = 1 });
                 var ruler = new TextBlock { Text = TimeSpan.FromSeconds(second).ToString(@"m\:ss"), Foreground = Brushes.DimGray, FontSize = 10, IsHitTestVisible = false };
@@ -831,6 +931,7 @@ namespace ForgeFlow
             }
             foreach (double markerTime in _markers.Where(value => value <= _model.Duration))
             {
+                if (markerTime < visibleStart || markerTime > visibleEnd) continue;
                 double markerX = markerTime / _model.Duration * width;
                 var markerLine = new Line { X1 = markerX, X2 = markerX, Y1 = 0, Y2 = height, Stroke = new SolidColorBrush(Color.FromArgb(150, 255, 193, 7)), StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 3, 4 }, IsHitTestVisible = false };
                 _tracksCanvas.Children.Add(markerLine);
@@ -839,6 +940,7 @@ namespace ForgeFlow
             }
             foreach (EditTimelineModel.Clip clip in _model.Clips)
             {
+                if (clip.End < visibleStart || clip.Start > visibleEnd) continue;
                 int row = _visibleTracks.IndexOf(clip.Track);
                 if (row < 0) continue;
                 double left = clip.Start / _model.Duration * width;
@@ -896,18 +998,27 @@ namespace ForgeFlow
             if (kind == EditTimelineModel.ClipKind.Audio)
             {
                 double center = height * 0.58;
-                int count = Math.Max(4, (int)(width / 7));
+                // Do not create thousands of WPF Line objects for a long
+                // music clip. A bounded, evenly-spaced preview keeps the
+                // waveform readable while preserving smooth scrolling/zoom.
+                int count = Math.Clamp((int)(width / 7), 4, 600);
+                double step = width / Math.Max(1, count);
                 for (int i = 0; i < count; i++)
                 {
-                    double x = i * 7 + 2;
+                    double x = i * step + Math.Min(2, step * 0.25);
                     double amplitude = 3 + Math.Abs(Math.Sin(i * 0.71) * Math.Cos(i * 0.19)) * Math.Max(5, height * 0.28);
                     canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = center - amplitude, Y2 = center + amplitude, Stroke = Brushes.LightCyan, StrokeThickness = 1 });
                 }
             }
             else if (kind == EditTimelineModel.ClipKind.Video)
             {
-                for (double x = 3; x < width; x += 22)
+                int count = Math.Clamp((int)(width / 22), 4, 320);
+                double step = width / Math.Max(1, count);
+                for (int i = 0; i < count; i++)
+                {
+                    double x = i * step + Math.Min(3, step * 0.25);
                     canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = 3, Y2 = height - 3, Stroke = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255)), StrokeThickness = 1 });
+                }
             }
             return canvas;
         }
@@ -1020,20 +1131,47 @@ namespace ForgeFlow
             {
                 FrameworkElement content;
                 if (clip.Kind == EditTimelineModel.ClipKind.Image)
-                    content = new Image { Source = new BitmapImage(new Uri(clip.Source)), Stretch = Stretch.Fill, IsHitTestVisible = false };
+                {
+                    if (File.Exists(clip.Source))
+                    {
+                        try
+                        {
+                            var bitmap = new BitmapImage();
+                            bitmap.BeginInit();
+                            bitmap.UriSource = new Uri(clip.Source, UriKind.Absolute);
+                            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                            bitmap.DecodePixelWidth = 2048;
+                            bitmap.EndInit();
+                            bitmap.Freeze();
+                            content = new Image { Source = bitmap, Stretch = Stretch.Fill, IsHitTestVisible = false };
+                        }
+                        catch
+                        {
+                            content = MissingMediaOverlay("تعذر تحميل الصورة");
+                        }
+                    }
+                    else content = MissingMediaOverlay("الصورة مفقودة — استخدم Relink Media");
+                }
                 else
+                {
+                    FontFamily textFont;
+                    try { textFont = new FontFamily(string.IsNullOrWhiteSpace(clip.FontFamily) ? "Arial" : clip.FontFamily); }
+                    catch { textFont = new FontFamily("Arial"); }
                     content = new TextBlock
                     {
                         Text = clip.Text,
                         FontSize = clip.FontSize,
-                        FontFamily = new FontFamily(clip.FontFamily),
+                        FontFamily = textFont,
                         Foreground = ParseBrush(clip.Color),
-                        TextWrapping = TextWrapping.NoWrap,
-                        Background = Brushes.Transparent,
-                        Padding = new Thickness(0),
+                        TextWrapping = clip.IsSubtitle ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                        TextAlignment = clip.IsSubtitle ? TextAlignment.Center : TextAlignment.Left,
+                        FontWeight = clip.IsSubtitle ? FontWeights.SemiBold : FontWeights.Normal,
+                        Background = clip.IsSubtitle ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(180, 0, 0, 0)) : Brushes.Transparent,
+                        Padding = clip.IsSubtitle ? new Thickness(8, 4, 8, 4) : new Thickness(0),
                         ClipToBounds = false,
                         IsHitTestVisible = false
                     };
+                }
                 var element = new Grid { Tag = clip.Id, Background = Brushes.Transparent, Cursor = Cursors.SizeAll };
                 element.Children.Add(content);
                 element.Tag = clip.Id;
@@ -1049,6 +1187,28 @@ namespace ForgeFlow
             PositionOverlays();
             UpdateOverlayVisibility();
             RenderLens();
+        }
+
+        private static FrameworkElement MissingMediaOverlay(string message)
+        {
+            return new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(210, 70, 36, 36)),
+                BorderBrush = Brushes.OrangeRed,
+                BorderThickness = new Thickness(1),
+                Child = new TextBlock
+                {
+                    Text = message,
+                    Foreground = Brushes.White,
+                    TextWrapping = TextWrapping.Wrap,
+                    TextAlignment = TextAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Padding = new Thickness(8),
+                    IsHitTestVisible = false
+                },
+                IsHitTestVisible = false
+            };
         }
 
         private void PositionOverlays()
@@ -1080,6 +1240,7 @@ namespace ForgeFlow
             _videoDragStart = e.GetPosition(_overlayCanvas);
             _videoDragOriginX = _videoOffsetX;
             _videoDragOriginY = _videoOffsetY;
+            _model.BeginUndoGroup();
             _overlayCanvas.CaptureMouse();
             ShowProperties();
             _status.Text = "تحريك الفيديو داخل الإطار — استخدم عجلة الماوس للتكبير والتصغير.";
@@ -1103,7 +1264,8 @@ namespace ForgeFlow
             _draggingVideo = false;
             _overlayCanvas.ReleaseMouseCapture();
             if (_activeVideoTransformId is Guid id)
-                _model.UpdateVideoTransform(id, _videoScaleX, _videoScaleY, _videoOffsetX, _videoOffsetY);
+                _model.UpdateVideoTransform(id, _videoScaleX, _videoScaleY, _videoOffsetX, _videoOffsetY, saveUndo: false);
+            _model.EndUndoGroup();
             ShowProperties();
             e.Handled = true;
         }
@@ -1116,6 +1278,7 @@ namespace ForgeFlow
                 _model.BeginUndoGroup();
                 double step = Keyboard.Modifiers.HasFlag(ModifierKeys.Control) ? 3 : 1;
                 _model.UpdateBlur(blur.Id, blur.EffectStrength + (e.Delta > 0 ? step : -step));
+                _model.EndUndoGroup();
                 ApplyTimedEffects();
                 ShowProperties();
                 RenderTimeline();
@@ -1132,7 +1295,11 @@ namespace ForgeFlow
                 _videoScaleY = Math.Clamp(_videoScaleY * factor, 1, 4);
             }
             if (_activeVideoTransformId is Guid id)
-                _model.UpdateVideoTransform(id, _videoScaleX, _videoScaleY, _videoOffsetX, _videoOffsetY);
+            {
+                _model.BeginUndoGroup();
+                _model.UpdateVideoTransform(id, _videoScaleX, _videoScaleY, _videoOffsetX, _videoOffsetY, saveUndo: false);
+                _model.EndUndoGroup();
+            }
             UpdateVideoTransform();
             ShowProperties();
             _status.Text = $"حجم الفيديو: {_videoScaleX:0.00}× عرض، {_videoScaleY:0.00}× طول — Shift للعرض وCtrl للطول.";
@@ -1265,12 +1432,14 @@ namespace ForgeFlow
             _draggingLens = false;
             _resizingLens = false;
             if (sender is UIElement element) element.ReleaseMouseCapture();
+            _model.EndUndoGroup();
             ShowProperties();
             e.Handled = true;
         }
 
         private void LensWheel(object sender, MouseWheelEventArgs e)
         {
+            _model.BeginUndoGroup();
             double factor = e.Delta > 0 ? 1.08 : 1 / 1.08;
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
                 _lensZoom = Math.Clamp(_lensZoom * factor, 2, 6);
@@ -1278,6 +1447,7 @@ namespace ForgeFlow
                 _lensSize = Math.Clamp(_lensSize * factor, 0.08, 0.60);
             if (_renderedLensClipId is Guid id)
                 _model.UpdateLens(id, _lensX, _lensY, _lensSize, _lensZoom);
+            _model.EndUndoGroup();
             UpdateLensVisual();
             ShowProperties();
             RenderTimeline();
@@ -1404,6 +1574,7 @@ namespace ForgeFlow
         {
             _dragging = false; _dragClipId = null;
             if (sender is UIElement element) element.ReleaseMouseCapture();
+            _model.EndUndoGroup();
             ShowProperties();
             e.Handled = true;
         }
@@ -1423,6 +1594,7 @@ namespace ForgeFlow
                 if (clip.Kind == EditTimelineModel.ClipKind.Text)
                     clip.FontSize = Math.Clamp(clip.FontSize * factor, 8, 240);
             }
+            _model.EndUndoGroup();
             PositionOverlays(); RenderTimeline(); ShowProperties();
             _status.Text = "عجلة الماوس للحجم الكامل • Shift للعرض فقط • Ctrl للطول فقط.";
             e.Handled = true;
@@ -1538,6 +1710,10 @@ namespace ForgeFlow
                 _properties.Children.Add(lensSize); _properties.Children.Add(lensSizeValue);
                 lensZoom.PreviewMouseLeftButtonDown += (_, _) => _model.BeginUndoGroup();
                 lensSize.PreviewMouseLeftButtonDown += (_, _) => _model.BeginUndoGroup();
+                lensZoom.PreviewMouseLeftButtonUp += (_, _) => _model.EndUndoGroup();
+                lensSize.PreviewMouseLeftButtonUp += (_, _) => _model.EndUndoGroup();
+                lensZoom.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
+                lensSize.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
                 void ApplyLensLive()
                 {
                     _model.UpdateLens(clip.Id, clip.X, clip.Y, lensSize.Value / 100.0, lensZoom.Value);
@@ -1565,6 +1741,8 @@ namespace ForgeFlow
                 var strengthValue = new TextBlock { Text = $"القوة: {clip.EffectStrength:0}", Foreground = Brushes.DeepSkyBlue, Margin = new Thickness(0, 2, 0, 4) };
                 _properties.Children.Add(strength); _properties.Children.Add(strengthValue);
                 strength.PreviewMouseLeftButtonDown += (_, _) => _model.BeginUndoGroup();
+                strength.PreviewMouseLeftButtonUp += (_, _) => _model.EndUndoGroup();
+                strength.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
                 strength.ValueChanged += (_, _) =>
                 {
                     _model.UpdateBlur(clip.Id, strength.Value);
@@ -1609,9 +1787,11 @@ namespace ForgeFlow
                 if (color.SelectedIndex < 0) color.SelectedIndex = 0;
                 _properties.Children.Add(color);
                 text.GotKeyboardFocus += (_, _) => _model.BeginUndoGroup();
+                text.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
                 text.TextChanged += (_, _) =>
                 {
                     clip.Text = text.Text;
+                    _model.NotifyChanged();
                     RenderOverlays();
                     _status.Text = "تحديث النص مباشر.";
                 };
@@ -1619,18 +1799,23 @@ namespace ForgeFlow
                 size.ValueChanged += (_, _) =>
                 {
                     clip.FontSize = size.Value;
+                    _model.NotifyChanged();
                     RenderOverlays();
                 };
                 font.SelectionChanged += (_, _) =>
                 {
                     _model.BeginUndoGroup();
                     clip.FontFamily = font.SelectedItem as string ?? "Arial";
+                    _model.NotifyChanged();
+                    _model.EndUndoGroup();
                     RenderOverlays();
                 };
                 color.SelectionChanged += (_, _) =>
                 {
                     _model.BeginUndoGroup();
                     clip.Color = color.SelectedValue as string ?? "#FFFFFF";
+                    _model.NotifyChanged();
+                    _model.EndUndoGroup();
                     RenderOverlays();
                 };
                 _properties.Children.Add(new TextBlock { Text = "تظهر الكتابة والحجم والخط واللون فورًا في شاشة المعاينة.", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray, Margin = new Thickness(0, 10, 0, 0) });
@@ -1662,13 +1847,17 @@ namespace ForgeFlow
                 foreach (Slider slider in new[] { volume, speed })
                 {
                     slider.PreviewMouseLeftButtonDown += (_, _) => _model.BeginUndoGroup();
+                    slider.PreviewMouseLeftButtonUp += (_, _) => _model.EndUndoGroup();
+                    slider.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
                     slider.PreviewKeyDown += (_, _) => _model.BeginUndoGroup();
+                    slider.PreviewKeyUp += (_, _) => _model.EndUndoGroup();
                     slider.ValueChanged += (_, _) => ApplyAudioLive();
                 }
                 muted.Click += (_, _) =>
                 {
                     _model.BeginUndoGroup();
                     ApplyAudioLive();
+                    _model.EndUndoGroup();
                 };
                 _properties.Children.Add(new TextBlock { Text = "يتغير مستوى الصوت والسرعة والكتم فورًا أثناء المعاينة.", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray, Margin = new Thickness(0, 10, 0, 0) });
                 if (clip.Track == "A2")
@@ -1695,12 +1884,15 @@ namespace ForgeFlow
                     clip.Height = height.Value / 100.0;
                     clip.X = Math.Clamp(x.Value / 100.0, 0, 1 - clip.Width);
                     clip.Y = Math.Clamp(y.Value / 100.0, 0, 1 - clip.Height);
+                    _model.NotifyChanged();
                     PositionOverlays();
                     _status.Text = "تحديث الحجم والمكان مباشر.";
                 }
                 foreach (Slider slider in new[] { x, y, width, height })
                 {
                     slider.PreviewMouseLeftButtonDown += (_, _) => _model.BeginUndoGroup();
+                    slider.PreviewMouseLeftButtonUp += (_, _) => _model.EndUndoGroup();
+                    slider.LostKeyboardFocus += (_, _) => _model.EndUndoGroup();
                     slider.ValueChanged += (_, _) => ApplyLayoutLive();
                 }
                 _properties.Children.Add(new TextBlock { Text = "بالماوس فقط: اسحب العنصر للتحريك، اسحب حافته لتغيير العرض أو الطول، واسحب الزاوية أو استخدم الزر الأيمن من أي مكان للتحجيم الكامل. عجلة الماوس تكبّر وتصغّر مباشرة.", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray, Margin = new Thickness(0, 14, 0, 0) });
@@ -1713,6 +1905,7 @@ namespace ForgeFlow
             if (_playing)
             {
                 _media.Pause();
+                _primaryAudioPlayer.Pause();
                 foreach (MediaElement player in _audioPlayers.Values) player.Pause();
                 _clock.Stop();
             }
@@ -1726,7 +1919,11 @@ namespace ForgeFlow
                 }
                 _playbackRate = 1;
                 _media.SpeedRatio = 1;
-                _media.Play(); SyncExtraAudio(_timeline.Value, true); _clock.Start();
+                _media.Play();
+                _playing = true;
+                SyncPrimaryAudio(_timeline.Value, playOverride: true);
+                SyncExtraAudio(_timeline.Value, true); _clock.Start();
+                return;
             }
             _playing = !_playing;
         }
@@ -1778,12 +1975,20 @@ namespace ForgeFlow
             _timeline.Value = position;
             _time.Text = FormatTime(_timeline.Value) + " / " + FormatTime(_model.Duration);
             UpdateOverlayVisibility(); UpdatePlayhead();
+            SyncPrimaryAudio(position);
             SyncExtraAudioIfNeeded(_timeline.Value);
             if (_playing) ScrollPlayheadIntoView();
         }
 
         private void Seek(double seconds)
         {
+            seconds = Math.Clamp(seconds, 0, Math.Max(0, _model.Duration));
+            // Keep the playhead frame-accurate. Without this normalization a
+            // mouse click can land between frames and create off-by-one-frame
+            // cuts when the project is 60/120 FPS.
+            double frame = FrameStep();
+            if (frame > 0)
+                seconds = Math.Round(seconds / frame, MidpointRounding.AwayFromZero) * frame;
             seconds = Math.Clamp(seconds, 0, Math.Max(0, _model.Duration));
             List<EditTimelineModel.Clip> clips = _model.Clips.Where(c => c.Kind == EditTimelineModel.ClipKind.Video).OrderBy(c => c.Start).ToList();
             EditTimelineModel.Clip? clip = clips.FirstOrDefault(c => seconds >= c.Start && seconds < c.End);
@@ -1798,7 +2003,7 @@ namespace ForgeFlow
                 LoadVideoTransform(clip);
                 double offset = Math.Clamp(seconds - clip.Start, 0, Math.Max(0, clip.End - clip.Start - 0.001));
                 double sourcePosition = clip.SourceOffset + offset;
-                string source = System.IO.Path.GetFullPath(clip.Source);
+                string source = ResolvePreviewSource(clip.Source);
                 if (!string.Equals(_loadedVideoSource, source, StringComparison.OrdinalIgnoreCase))
                 {
                     _resumeAfterVideoLoad = _playing;
@@ -1816,11 +2021,39 @@ namespace ForgeFlow
             SyncExtraAudio(seconds, _playing);
         }
 
-        private void SyncPrimaryAudio(double timelineSeconds)
+        private void SyncPrimaryAudio(double timelineSeconds, bool? playOverride = null)
         {
             EditTimelineModel.Clip? audio = _model.Clips.FirstOrDefault(c => c.Track == "A1" && c.Kind == EditTimelineModel.ClipKind.Audio && timelineSeconds >= c.Start && timelineSeconds < c.End);
-            _media.Volume = audio == null ? 1 : Math.Min(1, audio.Volume);
-            _media.IsMuted = _audioMuted || audio?.IsMuted == true;
+            // Keep the video's embedded audio muted and route A1 through its own
+            // player. This is required when A1 is unlinked, trimmed, moved, or
+            // replaced with another source; otherwise the original video audio
+            // leaks through during A1 gaps and drifts after an edit.
+            _media.Volume = 0;
+            _media.IsMuted = true;
+            if (audio == null || string.IsNullOrWhiteSpace(audio.Source) || !File.Exists(audio.Source))
+            {
+                _primaryAudioPlayer.Pause();
+                _primaryAudioPlayer.Volume = 0;
+                return;
+            }
+
+            string fullPath = System.IO.Path.GetFullPath(audio.Source);
+            if (!string.Equals(_loadedPrimaryAudioSource, fullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _loadedPrimaryAudioSource = fullPath;
+                _primaryAudioPlayer.Source = new Uri(fullPath, UriKind.Absolute);
+                _primaryAudioPlayer.Play();
+                _primaryAudioPlayer.Pause();
+            }
+            _primaryAudioPlayer.Volume = Math.Clamp(audio.Volume, 0, 1);
+            _primaryAudioPlayer.IsMuted = _audioMuted || audio.IsMuted;
+            _primaryAudioPlayer.SpeedRatio = Math.Clamp(audio.Speed, 0.05, 16);
+            double expected = audio.SourceOffset + (timelineSeconds - audio.Start) * audio.Speed;
+            if (Math.Abs(_primaryAudioPlayer.Position.TotalSeconds - expected) > 0.20)
+                _primaryAudioPlayer.Position = TimeSpan.FromSeconds(Math.Max(0, expected));
+            bool shouldPlay = playOverride ?? _playing;
+            if (shouldPlay && !_primaryAudioPlayer.IsMuted) _primaryAudioPlayer.Play();
+            else _primaryAudioPlayer.Pause();
         }
 
         private void SyncExtraAudio(double timelineSeconds, bool play)
@@ -1885,6 +2118,41 @@ namespace ForgeFlow
             return player;
         }
 
+        private string ResolvePreviewSource(string source)
+        {
+            string fullSource = System.IO.Path.GetFullPath(source);
+            return string.Equals(_proxySourcePath, fullSource, StringComparison.OrdinalIgnoreCase) &&
+                   !string.IsNullOrWhiteSpace(_proxyPreviewPath) && File.Exists(_proxyPreviewPath)
+                ? _proxyPreviewPath
+                : fullSource;
+        }
+
+        private static void CleanupStaleProxyCache()
+        {
+            try
+            {
+                string proxyDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ForgeFlow", "Proxies");
+                if (!Directory.Exists(proxyDir)) return;
+                DateTime cutoff = DateTime.UtcNow - TimeSpan.FromDays(7);
+                foreach (string partial in Directory.EnumerateFiles(proxyDir, "*.partial", SearchOption.TopDirectoryOnly))
+                {
+                    try { File.Delete(partial); } catch { }
+                }
+                foreach (string proxy in Directory.EnumerateFiles(proxyDir, "*_proxy720.mp4", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(proxy) < cutoff) File.Delete(proxy);
+                    }
+                    catch { }
+                }
+            }
+            catch
+            {
+                // Proxy cache cleanup is best effort and must never block the editor.
+            }
+        }
+
         private List<EditTimelineModel.Clip> GetVideoClips() => TimelinePlaybackNavigator.VideoClips(_model.Clips);
 
         private double GetVideoPlaybackEnd() => TimelinePlaybackNavigator.PlaybackEnd(_model.Clips);
@@ -1917,6 +2185,7 @@ namespace ForgeFlow
         private void CompletePlayback(double end)
         {
             _media.Pause();
+            _primaryAudioPlayer.Pause();
             foreach (MediaElement player in _audioPlayers.Values) player.Pause();
             _clock.Stop();
             _playing = false;
@@ -1941,7 +2210,7 @@ namespace ForgeFlow
                 return;
             }
             double oldStart = selected.Start;
-            if (_model.RippleTrimToPlayhead(_timeline.Value, trimBefore, _linked.IsChecked == true))
+            if (_model.RippleTrimToPlayhead(_timeline.Value, trimBefore, UseLinkedPrimary(selected)))
             {
                 RefreshEditor();
                 Seek(trimBefore ? oldStart : Math.Min(_timeline.Value, _model.Duration));
@@ -1952,10 +2221,17 @@ namespace ForgeFlow
             else _status.Text = "يجب أن يكون رأس التشغيل داخل المقطع المحدد لتنفيذ Ripple Trim.";
         }
 
+        private bool UseLinkedPrimary(EditTimelineModel.Clip clip)
+        {
+            if (_linked.IsChecked != true || clip.Track is not ("V1" or "A1")) return false;
+            // Never modify a locked companion implicitly through a linked edit.
+            return !_lockedTracks.Contains("V1") && !_lockedTracks.Contains("A1");
+        }
+
         private void AddMarker()
         {
             double at = _timeline.Value;
-            double tolerance = 1.0 / 30;
+            double tolerance = FrameStep();
             double? existing = _markers.FirstOrDefault(value => Math.Abs(value - at) <= tolerance);
             if (existing is double value && Math.Abs(value - at) <= tolerance && _markers.Contains(value))
             {
@@ -1968,6 +2244,7 @@ namespace ForgeFlow
                 _markers.Sort();
                 _status.Text = "أضيفت علامة عند " + FormatTime(at);
             }
+            MarkProjectDirty();
             RenderTimeline();
         }
 
@@ -2009,8 +2286,8 @@ namespace ForgeFlow
 
             var title = new TextBlock { Text = "اختصارات ForgeFlow Editor", FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, Margin = new Thickness(0, 0, 0, 18) };
             Grid.SetColumnSpan(title, 3); grid.Children.Add(title);
-            string left = "V   أداة التحديد\nC   قص عند رأس التشغيل\nH   أداة اليد\nS   تشغيل/إيقاف الجذب\nM   إضافة/حذف علامة\nShift+M   العلامة التالية\nQ   حذف ما قبل الرأس مع الإغلاق\nW   حذف ما بعد الرأس مع الإغلاق";
-            string right = "Space   تشغيل/إيقاف\nJ / K / L   رجوع / توقف / أمام\n↑ / ↓   نقطة القطع السابقة/التالية\n← / →   إطار واحد\nShift+←/→   ثانية واحدة\nCtrl+K   قص عند رأس التشغيل\nDelete   حذف وإغلاق الفراغ\nCtrl+C / Ctrl+V   نسخ ولصق\nCtrl+Z / Ctrl+Shift+Z   تراجع وإعادة\n+ / −   تكبير التايم لاين\n\nالصورة والنص داخل المعاينة:\nسحب = تحريك • سحب الحافة = عرض/طول\nسحب الزاوية أو الزر الأيمن = تحجيم كامل\nالعجلة = تكبير/تصغير";
+            string left = "V   أداة التحديد\nC   Blade: قص المقاطع تحت رأس التشغيل\nH   أداة اليد\nS   تشغيل/إيقاف الجذب\nM   إضافة/حذف علامة\nShift+M   العلامة التالية\nQ   حذف ما قبل الرأس مع الإغلاق\nW   حذف ما بعد الرأس مع الإغلاق";
+            string right = "Space   تشغيل/إيقاف\nJ / K / L   رجوع / توقف / أمام\n↑ / ↓   نقطة القطع السابقة/التالية\n← / →   إطار واحد\nShift+←/→   ثانية واحدة\nAlt+الأسهم   تحريك دقيق للصورة/النص/العدسة والفيديو\nAlt+↑/↓ على الصوت   رفع/خفض مستوى الصوت\nCtrl+K   قص عند رأس التشغيل\nDelete   حذف وإغلاق الفراغ\nCtrl+C / Ctrl+V   نسخ ولصق\nCtrl+S   حفظ سريع • Ctrl+Shift+S حفظ باسم\nCtrl+Z / Ctrl+Shift+Z   تراجع وإعادة\n+ / −   تكبير التايم لاين\n\nالصورة والنص داخل المعاينة:\nسحب = تحريك • سحب الحافة = عرض/طول\nسحب الزاوية أو الزر الأيمن = تحجيم كامل\nالعجلة = تكبير/تصغير";
             var leftText = new TextBlock { Text = left, FontFamily = new FontFamily("Segoe UI"), FontSize = 14, LineHeight = 27, Foreground = Brushes.Gainsboro };
             var rightText = new TextBlock { Text = right, FontFamily = new FontFamily("Segoe UI"), FontSize = 14, LineHeight = 27, Foreground = Brushes.Gainsboro };
             Grid.SetRow(leftText, 1); grid.Children.Add(leftText);
@@ -2053,15 +2330,8 @@ namespace ForgeFlow
 
         private void Split()
         {
-            EditTimelineModel.Clip? selected = _model.SelectedClip;
-            EditTimelineModel.Clip? cutTarget = selected != null && _timeline.Value > selected.Start && _timeline.Value < selected.End
-                ? selected
-                : _model.Clips.FirstOrDefault(c => c.Kind == EditTimelineModel.ClipKind.Video && _timeline.Value > c.Start && _timeline.Value < c.End);
-            if (cutTarget != null && _lockedTracks.Contains(cutTarget.Track))
-            {
-                _status.Text = $"المسار {cutTarget.Track} مقفل."; return;
-            }
-            if (_model.SplitAt(_timeline.Value, _linked.IsChecked == true))
+            int splitCount = _model.SplitAllAt(_timeline.Value, _linked.IsChecked == true, _lockedTracks);
+            if (splitCount > 0)
             {
                 // Splitting does not change playback time or media. Redrawing only the
                 // timeline avoids a redundant MediaElement seek and the visible micro-jump
@@ -2069,9 +2339,9 @@ namespace ForgeFlow
                 RenderTimeline();
                 ShowProperties();
                 UpdateOverlayVisibility();
-                _status.Text = "تم تقسيم المقطع بسلاسة عند " + FormatTime(_timeline.Value);
+                _status.Text = $"تم تقسيم {splitCount} مقطعًا بسلاسة عند {FormatTime(_timeline.Value)}";
             }
-            else _status.Text = "اختر مقطعًا وضع رأس التشغيل داخله قبل التقسيم.";
+            else _status.Text = "لا يوجد مقطع قابل للقص تحت رأس التشغيل أو أن المسار مقفول.";
         }
 
         private void DeleteSelected()
@@ -2087,7 +2357,7 @@ namespace ForgeFlow
             }
             double joinPosition = selected.Start;
             PausePlayback();
-            if (_model.DeleteSelected(_linked.IsChecked == true))
+            if (_model.DeleteSelected(UseLinkedPrimary(selected)))
             {
                 RefreshEditor();
                 Seek(Math.Min(joinPosition, _model.Duration));
@@ -2121,18 +2391,33 @@ namespace ForgeFlow
                 string extension = System.IO.Path.GetExtension(path).ToLowerInvariant();
                 string icon = IsVideoExtension(extension) ? "🎬" : IsAudioExtension(extension) ? "♫" : "▣";
                 var row = new Grid { Margin = new Thickness(0, 2, 0, 2), Background = new SolidColorBrush(Color.FromRgb(43, 43, 47)) };
+                row.ToolTip = "اسحب الوسيط إلى التايم لاين لإدراجه عند موضع المؤشر";
+                Point dragStart = default;
+                row.PreviewMouseLeftButtonDown += (_, e) => dragStart = e.GetPosition(row);
+                row.PreviewMouseMove += (_, e) =>
+                {
+                    if (e.LeftButton != MouseButtonState.Pressed || e.OriginalSource is Button) return;
+                    Point current = e.GetPosition(row);
+                    if (Math.Abs(current.X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                        Math.Abs(current.Y - dragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                    var payload = new DataObject(DataFormats.FileDrop, new[] { path });
+                    DragDrop.DoDragDrop(row, payload, DragDropEffects.Copy);
+                    e.Handled = true;
+                };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
                 var name = new TextBlock
                 {
-                    Text = $"{icon}  {System.IO.Path.GetFileName(path)}", ToolTip = path,
-                    Foreground = Brushes.White, TextTrimming = TextTrimming.CharacterEllipsis,
+                    Text = $"{icon}  {(File.Exists(path) ? "" : "[مفقود] ")}{System.IO.Path.GetFileName(path)}", ToolTip = path,
+                    Foreground = File.Exists(path) ? Brushes.White : Brushes.OrangeRed,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
                     VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 7, 4, 7)
                 };
                 row.Children.Add(name);
                 Button add = ToolButton("＋", async (_, _) => await AddProjectMediaAtPlayheadAsync(path));
+                add.IsEnabled = File.Exists(path);
                 add.Width = 30; add.MinWidth = 30; add.Height = 28; add.Padding = new Thickness(0); add.Margin = new Thickness(2);
-                add.ToolTip = "إدراج عند رأس التشغيل";
+                add.ToolTip = add.IsEnabled ? "إدراج عند رأس التشغيل" : "الوسيط مفقود — استخدم Relink Media أولًا";
                 Grid.SetColumn(add, 1); row.Children.Add(add);
                 _mediaBin.Children.Add(row);
             }
@@ -2187,6 +2472,32 @@ namespace ForgeFlow
             RefreshEditor(); _status.Text = $"أضيفت الصورة إلى {clip.Track}. اسحبها داخل المعاينة لتحديد مكانها.";
         }
 
+        private void ImportSubtitles(object? sender, RoutedEventArgs e)
+        {
+            if (_model.Duration <= 0)
+            {
+                ShowEditorMessage("تعذر استيراد الترجمة", "أضف فيديو إلى التايم لاين أولًا.", true);
+                return;
+            }
+
+            var dialog = new OpenFileDialog
+            {
+                Filter = "Subtitle files|*.srt;*.vtt|SRT files|*.srt|WebVTT files|*.vtt",
+                Title = "اختر ملف ترجمة"
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            if (!SubtitleService.TryParseFile(dialog.FileName, out List<SubtitleCue> cues, out string error))
+            {
+                ShowEditorMessage("تعذر استيراد الترجمة", error, true);
+                return;
+            }
+
+            int added = _model.AddSubtitleCues(cues);
+            RefreshEditor();
+            _status.Text = added == cues.Count
+                ? $"تم استيراد {added} مقطع ترجمة."
+                : $"تم استيراد {added} من أصل {cues.Count} مقطع ترجمة ضمن مدة المشروع.";
+        }
         private void AddText(object? sender, RoutedEventArgs e)
         {
             if (_model.Duration <= 0) return;
@@ -2303,6 +2614,12 @@ namespace ForgeFlow
             var settingsWindow = new EditorExportSettingsWindow(this, exportSettings, _model.Duration);
             if (settingsWindow.ShowDialog() != true) return;
             exportSettings = settingsWindow.ResultSettings;
+            string? exportPreflightError = ValidateExportInputs(exportSettings);
+            if (exportPreflightError != null)
+            {
+                ShowEditorMessage("تعذر بدء التصدير", exportPreflightError, true);
+                return;
+            }
             var save = new SaveFileDialog
             {
                 Filter = "MP4 Video|*.mp4", DefaultExt = ".mp4", AddExtension = true,
@@ -2310,6 +2627,12 @@ namespace ForgeFlow
                 InitialDirectory = System.IO.Path.GetDirectoryName(_sourcePath)
             };
             if (save.ShowDialog(this) != true) return;
+            string? outputPathError = ValidateExportOutputPath(save.FileName);
+            if (outputPathError != null)
+            {
+                ShowEditorMessage("مسار إخراج غير صالح", outputPathError, true);
+                return;
+            }
             using var exportCancellation = new System.Threading.CancellationTokenSource();
             var progressLabel = new TextBlock { Text = "تحضير التصدير...", Foreground = Brushes.White, Margin = new Thickness(0, 0, 0, 10) };
             var progressTrack = new Grid { Width = 430, Height = 8, Background = new SolidColorBrush(Color.FromRgb(49, 49, 54)), ClipToBounds = true };
@@ -2392,6 +2715,723 @@ namespace ForgeFlow
             }
         }
 
+        private string? ValidateExportInputs(EditorExportSettings settings)
+        {
+            if (!_model.Clips.Any(clip => clip.Kind == EditTimelineModel.ClipKind.Video))
+                return "لا يوجد أي مقطع فيديو قابل للتصدير في التايم لاين.";
+            if (!double.IsFinite(settings.FrameRate) || settings.FrameRate < 15 || settings.FrameRate > 120)
+                return "معدل الإطارات غير صالح. اختر قيمة بين 15 و120 FPS.";
+            if (settings.Width < 64 || settings.Width > 7680 || settings.Height < 64 || settings.Height > 4320)
+                return "أبعاد التصدير غير صالحة. يجب أن تكون بين 64 و7680 عرضًا، و64 و4320 ارتفاعًا.";
+            if (settings.IsBitrateMode && (!double.IsFinite(settings.VideoBitrateMbps) || settings.VideoBitrateMbps <= 0))
+                return "قيمة bitrate غير صالحة.";
+
+            string[] missing = _model.Clips
+                .Where(clip => clip.Kind is EditTimelineModel.ClipKind.Video or EditTimelineModel.ClipKind.Audio or EditTimelineModel.ClipKind.Image)
+                .Select(clip => clip.Source)
+                .Where(source => !string.IsNullOrWhiteSpace(source))
+                .Select(source => System.IO.Path.GetFullPath(source))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(source => !File.Exists(source))
+                .Take(8)
+                .ToArray();
+            if (missing.Length == 0) return null;
+            string details = string.Join("\n", missing.Select(path => "• " + path));
+            return "توجد وسائط مفقودة قبل التصدير. استخدم Relink Media ثم أعد المحاولة:\n\n" + details;
+        }
+
+        private string? ValidateExportOutputPath(string outputPath)
+        {
+            try
+            {
+                string fullOutput = System.IO.Path.GetFullPath(outputPath);
+                string? directory = System.IO.Path.GetDirectoryName(fullOutput);
+                if (string.IsNullOrWhiteSpace(directory)) return "اختر مجلد إخراج صالحًا.";
+                if (fullOutput.Length > 240) return "مسار الإخراج طويل جدًا. اختر مجلدًا أقرب إلى جذر القرص.";
+                string[] sources = _model.Clips
+                    .Where(clip => clip.Kind is EditTimelineModel.ClipKind.Video or EditTimelineModel.ClipKind.Audio or EditTimelineModel.ClipKind.Image)
+                    .Select(clip => clip.Source)
+                    .Where(source => !string.IsNullOrWhiteSpace(source))
+                    .Select(source => System.IO.Path.GetFullPath(source))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (sources.Any(source => string.Equals(source, fullOutput, StringComparison.OrdinalIgnoreCase)))
+                    return "لا يمكن حفظ التصدير فوق ملف مستخدم في المشروع. اختر اسمًا أو مجلدًا جديدًا للحفاظ على المصدر.";
+                Directory.CreateDirectory(directory);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return "مسار الإخراج غير صالح: " + ex.Message;
+            }
+        }
+
+        private void SaveProjectClicked(object? sender, RoutedEventArgs e) => SaveProject();
+
+        private void MarkProjectDirty()
+        {
+            if (!_initialMediaLoaded || _projectDirty) return;
+            _projectDirty = true;
+            UpdateWindowTitle();
+        }
+
+        private void UpdateWindowTitle()
+        {
+            string name = string.IsNullOrWhiteSpace(_projectFilePath)
+                ? "ForgeFlow Editor"
+                : "ForgeFlow Editor — " + System.IO.Path.GetFileNameWithoutExtension(
+                    System.IO.Path.GetFileNameWithoutExtension(_projectFilePath));
+            Title = _projectDirty ? name + "  *" : name;
+        }
+
+        private void EditorClosing(object? sender, CancelEventArgs e)
+        {
+            if (!_projectDirty) return;
+            MessageBoxResult choice = AskUnsavedChanges();
+            if (choice == MessageBoxResult.Cancel)
+            {
+                e.Cancel = true;
+                return;
+            }
+            if (choice == MessageBoxResult.Yes)
+            {
+                SaveProject();
+                // SaveProject leaves the dirty flag set when the user cancels the
+                // Save As dialog or when writing the project fails.
+                e.Cancel = _projectDirty;
+            }
+        }
+
+        private MessageBoxResult AskUnsavedChanges()
+        {
+            MessageBoxResult result = MessageBoxResult.Cancel;
+            Window? dialog = null;
+            var save = ToolButton("حفظ", (_, _) => { result = MessageBoxResult.Yes; dialog?.Close(); });
+            var discard = ToolButton("تجاهل", (_, _) => { result = MessageBoxResult.No; dialog?.Close(); });
+            var cancel = ToolButton("إلغاء", (_, _) => { result = MessageBoxResult.Cancel; dialog?.Close(); });
+            save.IsDefault = true;
+            cancel.IsCancel = true;
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            buttons.Children.Add(cancel); buttons.Children.Add(discard); buttons.Children.Add(save);
+            var panel = new StackPanel { Margin = new Thickness(18), FlowDirection = FlowDirection.RightToLeft };
+            panel.Children.Add(new TextBlock { Text = "لديك تعديلات غير محفوظة.", FontSize = 18, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            panel.Children.Add(new TextBlock { Text = "هل تريد حفظ تغييرات المشروع قبل الإغلاق؟", Margin = new Thickness(0, 10, 0, 18), Foreground = Brushes.LightGray });
+            panel.Children.Add(buttons);
+            dialog = new Window
+            {
+                Title = "تعديلات غير محفوظة",
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                ResizeMode = ResizeMode.NoResize,
+                Background = Panel,
+                Foreground = Brushes.White,
+                FlowDirection = FlowDirection.RightToLeft,
+                Content = panel
+            };
+            dialog.Resources[typeof(Button)] = CreateEditorButtonStyle();
+            dialog.ShowDialog();
+            return result;
+        }
+
+        private async void CreateProxyClicked(object? sender, RoutedEventArgs e)
+        {
+            string source = _model.Clips.FirstOrDefault(c => c.Kind == EditTimelineModel.ClipKind.Video)?.Source ?? _sourcePath;
+            if (!File.Exists(source)) { ShowEditorMessage("تعذر إنشاء Proxy", "مصدر الفيديو غير موجود.", true); return; }
+            string ffmpeg = System.IO.Path.Combine(AppContext.BaseDirectory, "Tools", "ffmpeg.exe");
+            if (!File.Exists(ffmpeg)) { ShowEditorMessage("تعذر إنشاء Proxy", "ملف FFmpeg غير موجود.", true); return; }
+            string proxyDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ForgeFlow", "Proxies");
+            Directory.CreateDirectory(proxyDir);
+            string sourceKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(source))))[..12];
+            string proxyPath = System.IO.Path.Combine(proxyDir, System.IO.Path.GetFileNameWithoutExtension(source) + "_" + sourceKey + "_proxy720.mp4");
+            _proxyCancellation?.Cancel();
+            _proxyCancellation?.Dispose();
+            _proxyCancellation = new CancellationTokenSource();
+            CancellationToken cancellationToken = _proxyCancellation.Token;
+            string partialPath = proxyPath + ".partial";
+            try { if (File.Exists(partialPath)) File.Delete(partialPath); } catch { }
+            IsEnabled = false;
+            _status.Text = "جارٍ إنشاء Proxy 720p للمعاينة...";
+            try
+            {
+                var start = new ProcessStartInfo
+                {
+                    FileName = ffmpeg, WorkingDirectory = proxyDir, UseShellExecute = false,
+                    CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true
+                };
+                start.ArgumentList.Add("-y"); start.ArgumentList.Add("-hide_banner"); start.ArgumentList.Add("-i"); start.ArgumentList.Add(source);
+                start.ArgumentList.Add("-vf"); start.ArgumentList.Add("scale='min(1280,iw)':-2:flags=fast_bilinear");
+                start.ArgumentList.Add("-c:v"); start.ArgumentList.Add("libx264"); start.ArgumentList.Add("-preset"); start.ArgumentList.Add("ultrafast");
+                start.ArgumentList.Add("-crf"); start.ArgumentList.Add("23"); start.ArgumentList.Add("-c:a"); start.ArgumentList.Add("aac"); start.ArgumentList.Add("-b:a"); start.ArgumentList.Add("128k");
+                start.ArgumentList.Add("-movflags"); start.ArgumentList.Add("+faststart"); start.ArgumentList.Add(partialPath);
+                using Process process = Process.Start(start) ?? throw new InvalidOperationException("تعذر تشغيل FFmpeg.");
+                using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+                {
+                    try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                });
+                string stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
+                await process.WaitForExitAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (process.ExitCode != 0 || !File.Exists(partialPath) || new FileInfo(partialPath).Length < 1024)
+                    throw new InvalidOperationException(stderr.Length > 1000 ? stderr[^1000..] : stderr);
+                File.Move(partialPath, proxyPath, true);
+                _proxySourcePath = System.IO.Path.GetFullPath(source);
+                _proxyPreviewPath = proxyPath;
+                _loadedVideoSource = proxyPath;
+                _media.Stop(); _media.Source = new Uri(proxyPath, UriKind.Absolute); _media.Play();
+                _status.Text = "تم تفعيل Proxy 720p للمعاينة — التصدير يستخدم المصدر الأصلي.";
+            }
+            catch (OperationCanceledException)
+            {
+                _status.Text = "تم إلغاء إنشاء Proxy.";
+            }
+            catch (Exception ex)
+            {
+                _status.Text = "فشل إنشاء Proxy: " + ex.Message;
+            }
+            finally
+            {
+                try { if (File.Exists(partialPath)) File.Delete(partialPath); } catch { }
+                IsEnabled = true;
+                Activate();
+            }
+        }
+
+        private EditorProjectFile CreateProjectFile(string projectPath)
+        {
+            return new EditorProjectFile
+            {
+                Width = _projectWidth,
+                Height = _projectHeight,
+                FrameRate = _projectFrameRate,
+                Timeline = _model.SaveJson(),
+                Media = BuildMediaManifest(projectPath),
+                Markers = _markers.Where(marker => marker >= 0 && marker <= _model.Duration)
+                    .Distinct().OrderBy(marker => marker).ToList(),
+                LockedTracks = _lockedTracks.OrderBy(track => track, StringComparer.Ordinal).ToList(),
+                HiddenTracks = _hiddenTracks.OrderBy(track => track, StringComparer.Ordinal).ToList(),
+                MutedAudioTracks = _mutedAudioTracks.OrderBy(track => track, StringComparer.Ordinal).ToList(),
+                LinkedVideoAudio = _linked.IsChecked == true,
+                PrimaryAudioMuted = _audioMuted
+            };
+        }
+
+        private string GetAutosavePath()
+        {
+            string basePath = string.IsNullOrWhiteSpace(_projectFilePath)
+                ? System.IO.Path.GetFullPath(_sourcePath) + ".forgeflow.autosave"
+                : System.IO.Path.GetFullPath(_projectFilePath) + ".autosave";
+            return basePath;
+        }
+
+        private void AutosaveProject()
+        {
+            if (!_initialMediaLoaded || !_projectDirty || !_model.ValidateCurrentState(out _)) return;
+            string? tempPath = null;
+            try
+            {
+                string autosavePath = GetAutosavePath();
+                string? directory = System.IO.Path.GetDirectoryName(autosavePath);
+                if (string.IsNullOrWhiteSpace(directory)) return;
+                Directory.CreateDirectory(directory);
+                tempPath = autosavePath + ".tmp." + Environment.ProcessId;
+                EditorProjectFile project = CreateProjectFile(autosavePath);
+                File.WriteAllText(tempPath, JsonSerializer.Serialize(project, new JsonSerializerOptions { WriteIndented = true }));
+                File.Move(tempPath, autosavePath, true);
+                _status.Text = "تم الحفظ التلقائي: " + System.IO.Path.GetFileName(autosavePath);
+            }
+            catch
+            {
+                // Autosave must never interrupt editing or replace a valid project.
+            }
+            finally
+            {
+                try { if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            }
+        }
+
+        private void DeleteAutosave(string? projectPath = null)
+        {
+            try
+            {
+                string path = string.IsNullOrWhiteSpace(projectPath)
+                    ? GetAutosavePath()
+                    : System.IO.Path.GetFullPath(projectPath) + ".autosave";
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
+        private bool TryRestoreAutosave()
+        {
+            string autosavePath;
+            try { autosavePath = GetAutosavePath(); }
+            catch { return false; }
+            if (!File.Exists(autosavePath)) return false;
+
+            try
+            {
+                string basePath = string.IsNullOrWhiteSpace(_projectFilePath) ? _sourcePath : _projectFilePath;
+                if (File.Exists(basePath) && File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(basePath))
+                    return false;
+
+                EditorProjectFile? project = TryReadProjectFile(autosavePath);
+                if (project == null || string.IsNullOrWhiteSpace(project.Timeline) ||
+                    !TryGetProjectMetadata(project, out _, out _, out _))
+                    return false;
+
+                MessageBoxResult choice = MessageBox.Show(
+                    this,
+                    "وجدت نسخة حفظ تلقائي أحدث من الملف الحالي. هل تريد استعادة آخر تعديلات?\n" + System.IO.Path.GetFileName(autosavePath),
+                    "استعادة الحفظ التلقائي",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Information);
+                if (choice != MessageBoxResult.Yes)
+                {
+                    DeleteAutosave();
+                    return false;
+                }
+
+                if (!RestoreProjectState(project))
+                {
+                    DeleteAutosave();
+                    return false;
+                }
+
+                _status.Text = "تم استرجاع الحفظ التلقائي. احفظ المشروع لتثبيت التعديلات.";
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool RestoreProjectState(EditorProjectFile project)
+        {
+            if (string.IsNullOrWhiteSpace(project.Timeline) ||
+                !TryGetProjectMetadata(project, out int width, out int height, out double frameRate) ||
+                !_model.LoadJson(project.Timeline))
+                return false;
+
+            _projectWidth = width;
+            _projectHeight = height;
+            _projectFrameRate = frameRate;
+            _markers.Clear();
+            _markers.AddRange((project.Markers ?? new List<double>())
+                .Where(marker => double.IsFinite(marker) && marker >= 0 && marker <= _model.Duration)
+                .Distinct().OrderBy(marker => marker));
+            _lockedTracks.Clear();
+            _hiddenTracks.Clear();
+            _mutedAudioTracks.Clear();
+            foreach (string track in project.LockedTracks ?? new List<string>()) _lockedTracks.Add(track);
+            foreach (string track in project.HiddenTracks ?? new List<string>()) _hiddenTracks.Add(track);
+            foreach (string track in project.MutedAudioTracks ?? new List<string>()) _mutedAudioTracks.Add(track);
+            _linked.IsChecked = project.LinkedVideoAudio;
+            _audioMuted = project.PrimaryAudioMuted;
+            foreach (EditTimelineModel.Clip clip in _model.Clips.Where(clip => clip.Kind == EditTimelineModel.ClipKind.Audio))
+            {
+                if (clip.Track == "A1") clip.IsMuted = _audioMuted;
+                else if (_mutedAudioTracks.Contains(clip.Track)) clip.IsMuted = true;
+            }
+            _media.Visibility = _hiddenTracks.Contains("V1") ? Visibility.Hidden : Visibility.Visible;
+            _media.IsMuted = _audioMuted;
+            RefreshEditor(markDirty: false);
+            UpdateSequenceBadge();
+            _projectDirty = true;
+            UpdateWindowTitle();
+            return true;
+        }
+        private void SaveProject(bool saveAs = false)
+        {
+            string projectPath = _projectFilePath ?? "";
+            if (saveAs || string.IsNullOrWhiteSpace(projectPath))
+            {
+                var dialog = new SaveFileDialog
+                {
+                    Filter = "ForgeFlow Project|*.forgeflow.json|JSON|*.json",
+                    FileName = string.IsNullOrWhiteSpace(_projectFilePath) ? "ForgeFlow_Project.forgeflow.json" : System.IO.Path.GetFileName(_projectFilePath),
+                    AddExtension = true,
+                    DefaultExt = ".forgeflow.json",
+                    Title = saveAs ? "حفظ نسخة جديدة من مشروع ForgeFlow" : "حفظ مشروع ForgeFlow"
+                };
+                if (dialog.ShowDialog(this) != true) return;
+                projectPath = dialog.FileName;
+            }
+            if (!_model.ValidateCurrentState(out string timelineError))
+            {
+                ShowEditorMessage("تعذر حفظ المشروع", timelineError + " أصلح حالة الـTimeline قبل الحفظ.", true);
+                return;
+            }
+            EditorProjectFile project = CreateProjectFile(projectPath);
+
+            string? tempPath = null;
+            string? backupPath = null;
+            bool backupCreated = false;
+            try
+            {
+                tempPath = projectPath + ".tmp." + Environment.ProcessId;
+                File.WriteAllText(tempPath, JsonSerializer.Serialize(project, new JsonSerializerOptions { WriteIndented = true }));
+                // Keep the last known-good project beside the active file. The
+                // backup is created before replacement, so a failed move or an
+                // interrupted write never destroys the previous edit state.
+                if (File.Exists(projectPath))
+                {
+                    backupPath = projectPath + ".bak";
+                    try
+                    {
+                        File.Copy(projectPath, backupPath, true);
+                        backupCreated = true;
+                    }
+                    catch
+                    {
+                        // A read-only folder should not prevent a normal save;
+                        // the atomic temporary-file replacement remains available.
+                        backupPath = null;
+                    }
+                }
+                File.Move(tempPath, projectPath, true);
+                _projectFilePath = projectPath;
+                _projectDirty = false;
+                UpdateWindowTitle();
+                _status.Text = backupCreated
+                    ? "تم حفظ المشروع مع نسخة احتياطية: " + System.IO.Path.GetFileName(projectPath) + ".bak"
+                    : "تم حفظ المشروع: " + System.IO.Path.GetFileName(projectPath);
+            }
+            catch (Exception ex)
+            {
+                ShowEditorMessage("تعذر حفظ المشروع", ex.Message, true);
+            }
+            finally
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath)) File.Delete(tempPath);
+                }
+                catch { }
+            }
+        }
+
+        private void OpenProjectClicked(object? sender, RoutedEventArgs e) => OpenProject();
+
+        private static EditorProjectFile? TryReadProjectFile(string path)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<EditorProjectFile>(File.ReadAllText(path));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool TryGetProjectMetadata(EditorProjectFile project, out int width, out int height, out double frameRate)
+        {
+            width = project.Width <= 0 ? 1920 : Math.Clamp(project.Width, 64, 7680);
+            height = project.Height <= 0 ? 1080 : Math.Clamp(project.Height, 64, 4320);
+            if (project.FrameRate == 0)
+            {
+                frameRate = 30;
+                return true;
+            }
+            if (!double.IsFinite(project.FrameRate) || project.FrameRate < 15 || project.FrameRate > 120)
+            {
+                frameRate = 0;
+                return false;
+            }
+            frameRate = project.FrameRate;
+            return true;
+        }
+
+        private MessageBoxResult AskRestoreBackup(string backupPath)
+        {
+            MessageBoxResult result = MessageBoxResult.Cancel;
+            Window? dialog = null;
+            var restore = ToolButton("استعادة", (_, _) => { result = MessageBoxResult.Yes; dialog?.Close(); });
+            var cancel = ToolButton("إلغاء", (_, _) => { result = MessageBoxResult.Cancel; dialog?.Close(); });
+            restore.IsDefault = true;
+            cancel.IsCancel = true;
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            buttons.Children.Add(cancel); buttons.Children.Add(restore);
+            var panel = new StackPanel { Margin = new Thickness(18), FlowDirection = FlowDirection.RightToLeft };
+            panel.Children.Add(new TextBlock { Text = "ملف المشروع الأساسي غير صالح.", FontSize = 18, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            panel.Children.Add(new TextBlock
+            {
+                Text = "تم العثور على نسخة احتياطية سابقة. هل تريد استعادتها؟\n" + System.IO.Path.GetFileName(backupPath),
+                Margin = new Thickness(0, 10, 0, 18), Foreground = Brushes.LightGray, TextWrapping = TextWrapping.Wrap
+            });
+            panel.Children.Add(buttons);
+            dialog = new Window
+            {
+                Title = "استعادة نسخة احتياطية",
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                ResizeMode = ResizeMode.NoResize,
+                Background = Panel,
+                Foreground = Brushes.White,
+                FlowDirection = FlowDirection.RightToLeft,
+                Content = panel
+            };
+            dialog.Resources[typeof(Button)] = CreateEditorButtonStyle();
+            dialog.ShowDialog();
+            return result;
+        }
+
+        private void OpenProject()
+        {
+            var dialog = new OpenFileDialog
+            {
+                Filter = "ForgeFlow Project|*.forgeflow.json|JSON|*.json",
+                Title = "فتح مشروع ForgeFlow"
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            try
+            {
+                string backupPath = dialog.FileName + ".bak";
+                bool restoredBackup = false;
+                EditorProjectFile? project = TryReadProjectFile(dialog.FileName);
+                if (project == null || string.IsNullOrWhiteSpace(project.Timeline))
+                {
+                    if (!File.Exists(backupPath) || AskRestoreBackup(backupPath) != MessageBoxResult.Yes)
+                    {
+                        ShowEditorMessage("ملف المشروع غير صالح", "الملف ناقص أو لا يحتوي على تايملاين صالح.", true); return;
+                    }
+                    project = TryReadProjectFile(backupPath);
+                    restoredBackup = project != null;
+                }
+                if (project == null || string.IsNullOrWhiteSpace(project.Timeline))
+                {
+                    ShowEditorMessage("تعذر استعادة النسخة الاحتياطية", "ملف النسخة الاحتياطية غير صالح أيضًا.", true); return;
+                }
+                // Metadata is separate from the timeline JSON. Treat missing legacy
+                // values as safe defaults, but reject non-finite/out-of-range values
+                // instead of allowing NaN or an extreme frame rate into the preview
+                // slider and export command line.
+                if (!TryGetProjectMetadata(project, out int projectWidth, out int projectHeight, out double projectFrameRate))
+                {
+                    if (restoredBackup || !File.Exists(backupPath) || AskRestoreBackup(backupPath) != MessageBoxResult.Yes)
+                    {
+                        ShowEditorMessage("معدل إطارات غير صالح", "يجب أن يكون معدل الإطارات بين 15 و120 إطارًا/ثانية.", true); return;
+                    }
+                    project = TryReadProjectFile(backupPath);
+                    if (project == null || string.IsNullOrWhiteSpace(project.Timeline) ||
+                        !TryGetProjectMetadata(project, out projectWidth, out projectHeight, out projectFrameRate))
+                    {
+                        ShowEditorMessage("تعذر استعادة النسخة الاحتياطية", "بيانات النسخة الاحتياطية غير صالحة.", true); return;
+                    }
+                    restoredBackup = true;
+                }
+                if (!_model.LoadJson(project.Timeline))
+                {
+                    if (restoredBackup || !File.Exists(backupPath) || AskRestoreBackup(backupPath) != MessageBoxResult.Yes)
+                    {
+                        ShowEditorMessage("ملف المشروع غير صالح", "الملف ناقص أو لا يحتوي على تايملاين صالح.", true); return;
+                    }
+                    project = TryReadProjectFile(backupPath);
+                    if (project == null || string.IsNullOrWhiteSpace(project.Timeline) ||
+                        !TryGetProjectMetadata(project, out projectWidth, out projectHeight, out projectFrameRate) ||
+                        !_model.LoadJson(project.Timeline))
+                    {
+                        ShowEditorMessage("تعذر استعادة النسخة الاحتياطية", "ملف النسخة الاحتياطية لا يحتوي على تايملاين قابل للتحميل.", true); return;
+                    }
+                    restoredBackup = true;
+                }
+                _projectWidth = projectWidth;
+                _projectHeight = projectHeight;
+                _projectFrameRate = projectFrameRate;
+                _projectFilePath = dialog.FileName;
+                _projectDirty = false;
+                _proxySourcePath = null;
+                _proxyPreviewPath = null;
+                _markers.Clear();
+                _markers.AddRange((project.Markers ?? new List<double>())
+                    .Where(marker => double.IsFinite(marker) && marker >= 0 && marker <= _model.Duration)
+                    .Distinct().OrderBy(marker => marker));
+                _lockedTracks.Clear();
+                _hiddenTracks.Clear();
+                _mutedAudioTracks.Clear();
+                foreach (string track in project.LockedTracks ?? new List<string>()) _lockedTracks.Add(track);
+                foreach (string track in project.HiddenTracks ?? new List<string>()) _hiddenTracks.Add(track);
+                foreach (string track in project.MutedAudioTracks ?? new List<string>()) _mutedAudioTracks.Add(track);
+                _linked.IsChecked = project.LinkedVideoAudio;
+                _audioMuted = project.PrimaryAudioMuted;
+                foreach (EditTimelineModel.Clip clip in _model.Clips.Where(clip => clip.Kind == EditTimelineModel.ClipKind.Audio))
+                {
+                    if (clip.Track == "A1") clip.IsMuted = _audioMuted;
+                    else if (_mutedAudioTracks.Contains(clip.Track)) clip.IsMuted = true;
+                }
+                _media.Visibility = _hiddenTracks.Contains("V1") ? Visibility.Hidden : Visibility.Visible;
+                _media.IsMuted = _audioMuted;
+                int relinked = ResolveProjectMedia(project, dialog.FileName);
+                // Opening a project must replace the previous project's media bin;
+                // otherwise imported assets from an older project remain visible
+                // and can be inserted into the wrong timeline by accident.
+                _projectMedia.Clear();
+                _mediaBin.Children.Clear();
+                foreach (string source in _model.Clips.Select(c => c.Source).Where(File.Exists))
+                    RegisterProjectMedia(source);
+                foreach (MediaManifestEntry media in project.Media ?? new List<MediaManifestEntry>())
+                {
+                    string candidate = !string.IsNullOrWhiteSpace(media.RelativePath)
+                        ? System.IO.Path.GetFullPath(System.IO.Path.Combine(
+                            System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(dialog.FileName)) ?? AppContext.BaseDirectory,
+                            media.RelativePath))
+                        : (media.OriginalPath ?? "");
+                    if (!string.IsNullOrWhiteSpace(candidate)) RegisterProjectMedia(candidate);
+                }
+                EditTimelineModel.Clip? active = _model.Clips.FirstOrDefault(c => c.Kind == EditTimelineModel.ClipKind.Video && File.Exists(c.Source));
+                if (active != null)
+                {
+                    _loadedVideoSource = System.IO.Path.GetFullPath(active.Source);
+                    _media.Source = new Uri(_loadedVideoSource, UriKind.Absolute);
+                }
+                UpdateSequenceBadge();
+                RefreshEditor(markDirty: false);
+                UpdateWindowTitle();
+                int missing = _model.Clips.Select(c => c.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.OrdinalIgnoreCase).Count(source => !File.Exists(source));
+                bool recoveredAutosave = TryRestoreAutosave();
+                _status.Text = missing == 0
+                    ? (recoveredAutosave
+                        ? "تم استرجاع الحفظ التلقائي. احفظ المشروع لتثبيت التعديلات."
+                        : (restoredBackup
+                        ? "تم فتح النسخة الاحتياطية واستعادة المشروع: " + System.IO.Path.GetFileName(dialog.FileName)
+                        : "تم فتح المشروع: " + System.IO.Path.GetFileName(dialog.FileName)))
+                    : $"تم فتح المشروع مع {missing} ملف مفقود. استخدم Relink Media لإعادة الربط.";
+            }
+            catch (Exception ex)
+            {
+                ShowEditorMessage("تعذر فتح المشروع", ex.Message, true);
+            }
+        }
+
+        private List<MediaManifestEntry> BuildMediaManifest(string projectPath)
+        {
+            string projectDirectory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(projectPath)) ?? AppContext.BaseDirectory;
+            return _model.Clips
+                .Select(clip => clip.Source)
+                .Where(source => !string.IsNullOrWhiteSpace(source))
+                .Select(source => System.IO.Path.GetFullPath(source))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(fullPath => new MediaManifestEntry
+                {
+                    OriginalPath = fullPath,
+                    RelativePath = GetSafeRelativePath(projectDirectory, fullPath),
+                    LengthBytes = TryGetMediaLength(fullPath)
+                })
+                .ToList();
+        }
+
+        private static long TryGetMediaLength(string path)
+        {
+            try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+            catch { return 0; }
+        }
+
+        private static string GetSafeRelativePath(string baseDirectory, string targetPath)
+        {
+            try
+            {
+                string relative = System.IO.Path.GetRelativePath(baseDirectory, targetPath);
+                return relative.StartsWith("..", StringComparison.Ordinal) ? "" : relative;
+            }
+            catch { return ""; }
+        }
+
+        private int ResolveProjectMedia(EditorProjectFile project, string projectPath)
+        {
+            if (project.Media == null || project.Media.Count == 0) return 0;
+            string projectDirectory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(projectPath)) ?? AppContext.BaseDirectory;
+            int resolved = 0;
+            foreach (EditTimelineModel.Clip clip in _model.Clips)
+            {
+                if (string.IsNullOrWhiteSpace(clip.Source) || File.Exists(clip.Source)) continue;
+                MediaManifestEntry? entry = project.Media.FirstOrDefault(media =>
+                    string.Equals(media.OriginalPath, clip.Source, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(System.IO.Path.GetFileName(media.OriginalPath), System.IO.Path.GetFileName(clip.Source), StringComparison.OrdinalIgnoreCase));
+                if (entry == null || string.IsNullOrWhiteSpace(entry.RelativePath)) continue;
+                string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine(projectDirectory, entry.RelativePath));
+                if (!IsUsableMedia(candidate) || !IsCompatibleMedia(clip.Kind, candidate)) continue;
+                if (entry.LengthBytes > 0 && TryGetMediaLength(candidate) != entry.LengthBytes) continue;
+                clip.Source = candidate;
+                RegisterProjectMedia(candidate);
+                resolved++;
+            }
+            return resolved;
+        }
+
+        private void RelinkMissingMediaClicked(object? sender, RoutedEventArgs e)
+        {
+            string[] missing = _model.Clips.Select(clip => clip.Source)
+                .Where(source => !string.IsNullOrWhiteSpace(source) && !File.Exists(source))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (missing.Length == 0)
+            {
+                _status.Text = "لا توجد وسائط مفقودة في المشروع.";
+                return;
+            }
+            var dialog = new OpenFileDialog
+            {
+                Filter = "Media|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v;*.mp3;*.wav;*.m4a;*.aac;*.flac;*.ogg;*.png;*.jpg;*.jpeg;*.webp;*.bmp",
+                Title = $"اختر ملفات لإعادة ربط {missing.Length} وسيط مفقود",
+                Multiselect = true
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            Dictionary<string, string> byName = dialog.FileNames
+                .Where(IsSupportedDropFile)
+                .GroupBy(file => System.IO.Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var replacements = new List<(EditTimelineModel.Clip Clip, string Path)>();
+            foreach (EditTimelineModel.Clip clip in _model.Clips)
+            {
+                if (File.Exists(clip.Source)) continue;
+                string fileName = System.IO.Path.GetFileName(clip.Source);
+                if (!byName.TryGetValue(fileName, out string? replacement)) continue;
+                if (!IsUsableMedia(replacement) || !IsCompatibleMedia(clip.Kind, replacement)) continue;
+                replacements.Add((clip, System.IO.Path.GetFullPath(replacement)));
+            }
+            if (replacements.Count > 0)
+            {
+                _model.BeginUndoGroup();
+                foreach ((EditTimelineModel.Clip clip, string replacement) in replacements)
+                {
+                    clip.Source = replacement;
+                    RegisterProjectMedia(replacement);
+                }
+                _model.EndUndoGroup();
+                // A proxy is tied to the old absolute source path. Force the
+                // preview back to the relinked original instead of keeping a
+                // stale proxy from another project.
+                _proxySourcePath = null;
+                _proxyPreviewPath = null;
+            }
+            int relinked = replacements.Count;
+            RefreshEditor();
+            _status.Text = relinked == 0
+                ? "لم يتم العثور على تطابق بالاسم. اختر ملفًا بالاسم الأصلي أو أعد المحاولة."
+                : $"تمت إعادة ربط {relinked} وسائط بنجاح.";
+        }
+
+        private static bool IsUsableMedia(string path)
+        {
+            try { return File.Exists(path) && new FileInfo(path).Length > 0; }
+            catch { return false; }
+        }
+
+        private static bool IsCompatibleMedia(EditTimelineModel.ClipKind kind, string path)
+        {
+            string extension = System.IO.Path.GetExtension(path).ToLowerInvariant();
+            return kind switch
+            {
+                EditTimelineModel.ClipKind.Video => IsVideoExtension(extension),
+                EditTimelineModel.ClipKind.Audio => IsAudioExtension(extension),
+                EditTimelineModel.ClipKind.Image => extension is ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp",
+                _ => true
+            };
+        }
+
         private void HandleKeys(object sender, KeyEventArgs e)
         {
             if (Keyboard.FocusedElement is TextBoxBase) return;
@@ -2399,11 +3439,21 @@ namespace ForgeFlow
                 return;
             bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
             bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+            bool alt = Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
+            if (alt && e.Key is Key.Left or Key.Right or Key.Up or Key.Down)
+            {
+                NudgeSelected(e.Key, shift);
+                e.Handled = true;
+                return;
+            }
             if (ctrl && shift && e.Key == Key.Z) { if (_model.Redo()) RefreshEditor(); }
+            else if (ctrl && shift && e.Key == Key.S) SaveProject(true);
+            else if (ctrl && e.Key == Key.S) SaveProject();
+            else if (ctrl && e.Key == Key.O) OpenProject();
             else if (ctrl && e.Key == Key.Z) { if (_model.Undo()) RefreshEditor(); }
             else if (ctrl && e.Key == Key.Y) { if (_model.Redo()) RefreshEditor(); }
             else if (ctrl && e.Key == Key.C) { if (_model.CopySelected(_linked.IsChecked == true)) _status.Text = _linked.IsChecked == true ? "تم نسخ المقطع مع الصوت المرتبط." : "تم نسخ المقطع المحدد."; }
-            else if (ctrl && e.Key == Key.V) { if (_model.PasteAt(_timeline.Value)) { RefreshEditor(); _status.Text = "تم اللصق عند رأس التشغيل."; } }
+            else if (ctrl && e.Key == Key.V) { if (_model.PasteAt(_timeline.Value, _linked.IsChecked == true)) { RefreshEditor(); _status.Text = "تم اللصق عند رأس التشغيل."; } }
             else if (ctrl && e.Key == Key.D)
             {
                 if (_model.DuplicateSelected(_timeline.Value, _linked.IsChecked == true)) { RefreshEditor(); _status.Text = "تم تكرار المقطع عند رأس التشغيل مع الحفاظ على ارتباط الصوت."; }
@@ -2434,7 +3484,11 @@ namespace ForgeFlow
             else if (!ctrl && e.Key == Key.K) PausePlayback();
             else if (!ctrl && e.Key == Key.L) ShuttleForward();
             else if (e.Key is Key.Delete or Key.Back) DeleteSelected();
-            else if (e.Key == Key.Escape) SetTool(EditorTool.Selection);
+            else if (e.Key == Key.Escape)
+            {
+                CancelInteractiveGesture();
+                SetTool(EditorTool.Selection);
+            }
             else if (e.Key == Key.Home) Seek(0);
             else if (e.Key == Key.End) Seek(_model.Duration);
             else if (e.Key == Key.Up) GoToEdit(false);
@@ -2442,10 +3496,127 @@ namespace ForgeFlow
             else if (e.Key is Key.OemPlus or Key.Add) _zoom.Value = Math.Min(_zoom.Maximum, _zoom.Value * 1.22);
             else if (e.Key is Key.OemMinus or Key.Subtract) _zoom.Value = Math.Max(_zoom.Minimum, _zoom.Value / 1.22);
             else if (e.Key == Key.OemBackslash) FitTimeline();
-            else if (e.Key == Key.Left) Seek(_timeline.Value - (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1 : 1.0 / 30));
-            else if (e.Key == Key.Right) Seek(_timeline.Value + (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1 : 1.0 / 30));
+            else if (e.Key == Key.Left) Seek(_timeline.Value - (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1 : FrameStep()));
+            else if (e.Key == Key.Right) Seek(_timeline.Value + (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1 : FrameStep()));
             else return;
             e.Handled = true;
+        }
+
+        private double FrameStep() => 1.0 / Math.Clamp(_projectFrameRate, 15, 120);
+
+        private void NudgeSelected(Key key, bool coarse)
+        {
+            EditTimelineModel.Clip? clip = _model.SelectedClip;
+            if (clip == null)
+            {
+                _status.Text = "حدد عنصرًا لتحريكه بدقة عبر Alt+الأسهم.";
+                return;
+            }
+
+            double step = coarse ? 0.02 : 0.005;
+            bool horizontal = key is Key.Left or Key.Right;
+            double direction = key is Key.Left or Key.Up ? -1 : 1;
+            _model.BeginUndoGroup();
+            bool changed = false;
+
+            if (clip.Kind is EditTimelineModel.ClipKind.Image or EditTimelineModel.ClipKind.Text)
+            {
+                if (horizontal)
+                {
+                    double next = Math.Clamp(clip.X + direction * step, 0, Math.Max(0, 1 - clip.Width));
+                    changed = Math.Abs(next - clip.X) > 0.0001;
+                    clip.X = next;
+                }
+                else
+                {
+                    double next = Math.Clamp(clip.Y + direction * step, 0, Math.Max(0, 1 - clip.Height));
+                    changed = Math.Abs(next - clip.Y) > 0.0001;
+                    clip.Y = next;
+                }
+                PositionOverlays();
+                _status.Text = $"تحريك {clip.Kind switch { EditTimelineModel.ClipKind.Image => "الصورة", _ => "النص" }}: {clip.X:0.###}, {clip.Y:0.###}";
+            }
+            else if (clip.Kind == EditTimelineModel.ClipKind.Lens)
+            {
+                if (horizontal)
+                {
+                    double next = Math.Clamp(clip.X + direction * step, 0, 1);
+                    changed = Math.Abs(next - clip.X) > 0.0001;
+                    clip.X = next;
+                }
+                else
+                {
+                    double next = Math.Clamp(clip.Y + direction * step, 0, 1);
+                    changed = Math.Abs(next - clip.Y) > 0.0001;
+                    clip.Y = next;
+                }
+                _lensX = clip.X; _lensY = clip.Y;
+                UpdateLensVisual();
+                _status.Text = $"تحريك العدسة: {clip.X:0.###}, {clip.Y:0.###}";
+            }
+            else if (clip.Kind == EditTimelineModel.ClipKind.Video)
+            {
+                double nextX = clip.VideoOffsetX;
+                double nextY = clip.VideoOffsetY;
+                if (horizontal) nextX = Math.Clamp(nextX + direction * step, -1, 1);
+                else nextY = Math.Clamp(nextY + direction * step, -1, 1);
+                changed = Math.Abs(nextX - clip.VideoOffsetX) > 0.0001 || Math.Abs(nextY - clip.VideoOffsetY) > 0.0001;
+                _model.UpdateVideoTransform(clip.Id, clip.HasVideoTransform ? clip.VideoScaleX : 1,
+                    clip.HasVideoTransform ? clip.VideoScaleY : 1, nextX, nextY, saveUndo: false);
+                LoadVideoTransform(clip);
+                _status.Text = $"تحريك الفيديو داخل الكادر: {clip.VideoOffsetX:0.###}, {clip.VideoOffsetY:0.###}";
+            }
+            else if (clip.Kind == EditTimelineModel.ClipKind.Audio && !horizontal)
+            {
+                double next = Math.Clamp(clip.Volume + direction * (coarse ? 0.10 : 0.05), 0, 2);
+                changed = Math.Abs(next - clip.Volume) > 0.0001;
+                _model.UpdateAudio(clip.Id, next, clip.Speed, clip.IsMuted, saveUndo: false);
+                SyncPrimaryAudio(_timeline.Value);
+                SyncExtraAudio(_timeline.Value, _playing);
+                _status.Text = $"مستوى الصوت: {next * 100:0}%";
+            }
+
+            if (!changed)
+            {
+                _model.CancelUndoGroup();
+                return;
+            }
+            if (changed) _model.NotifyChanged();
+            _model.EndUndoGroup();
+            RenderTimeline();
+            ShowProperties();
+        }
+
+        private void CancelInteractiveGesture()
+        {
+            // Overlay/lens/video gestures update the live preview while the
+            // pointer is down. Escape must restore the pre-gesture snapshot,
+            // not leave a half-applied transform in the project.
+            bool directGesture = _dragging || _draggingLens || _draggingVideo;
+            bool timelineGesture = _handPanning || _moveContext != null || _trimContext != null;
+            if (Mouse.Captured is UIElement captured)
+            {
+                try { captured.ReleaseMouseCapture(); } catch { }
+            }
+            if (_dragging) _overlayCanvas.ReleaseMouseCapture();
+            if (_draggingLens && _lensVisual != null) _lensVisual.ReleaseMouseCapture();
+            if (_draggingVideo) _overlayCanvas.ReleaseMouseCapture();
+            _dragging = false;
+            _dragClipId = null;
+            _draggingLens = false;
+            _resizingLens = false;
+            _draggingVideo = false;
+            _handPanning = false;
+            _moveContext = null;
+            _trimContext = null;
+            if (directGesture)
+            {
+                _model.EndUndoGroup();
+                if (_model.Undo()) RefreshEditor();
+                else RefreshEditor();
+            }
+            else if (timelineGesture) RefreshEditor();
+            _status.Text = directGesture || timelineGesture ? "تم إلغاء التعديل الحالي." : "تم تفعيل أداة التحديد.";
         }
 
         private void TimelineMouseWheel(object sender, MouseWheelEventArgs e)

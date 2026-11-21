@@ -1,5 +1,6 @@
 using System.IO;
 using System.Security.Cryptography;
+using VideoProcessing;
 
 namespace ForgeFlow
 {
@@ -7,6 +8,8 @@ namespace ForgeFlow
     {
         public bool Ready { get; init; }
         public bool ManifestPresent { get; init; }
+        public bool ManifestSignaturePresent { get; init; }
+        public bool ManifestSignatureValid { get; init; }
         public bool VersionFilePresent { get; init; }
         public bool VersionMatchesAssembly { get; init; }
         public bool RifeModelPresent { get; init; }
@@ -16,6 +19,8 @@ namespace ForgeFlow
         public string FfmpegPath { get; init; } = "";
         public string FfprobePath { get; init; } = "";
         public string RifePath { get; init; } = "";
+        public bool TensorRtAvailable { get; init; }
+        public string TensorRtDetails { get; init; } = "";
     }
 
     public static class ToolVerifier
@@ -70,8 +75,11 @@ namespace ForgeFlow
 
             string manifestPath = Path.Combine(toolsDir, "tools.sha256");
             bool manifestPresent = File.Exists(manifestPath);
+            bool manifestSignaturePresent = File.Exists(Path.Combine(toolsDir, "tools.sha256.sig"));
+            bool manifestSignatureValid = !manifestSignaturePresent;
             if (manifestPresent)
             {
+                var manifestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (string line in File.ReadAllLines(manifestPath))
                 {
                     string trimmed = line.Trim();
@@ -83,6 +91,7 @@ namespace ForgeFlow
                         continue;
 
                     string relative = string.Join(" ", parts.Skip(1)).Trim().Replace('/', Path.DirectorySeparatorChar);
+                    manifestPaths.Add(relative);
                     string path = Path.Combine(toolsDir, relative);
                     if (!File.Exists(path))
                     {
@@ -93,6 +102,40 @@ namespace ForgeFlow
                     string actual = ComputeSha256(path);
                     if (!string.Equals(actual, parts[0], StringComparison.OrdinalIgnoreCase))
                         hashFailures.Add(relative + " SHA256 mismatch");
+                }
+
+                // A manifest that only checks a hand-picked subset is not a
+                // complete integrity manifest. Require every shipped base
+                // tool/model/script to be represented, while deliberately
+                // excluding the optional TensorRT vendor directory and the
+                // manifest/signature files themselves.
+                foreach (string actualPath in Directory.EnumerateFiles(toolsDir, "*", SearchOption.AllDirectories))
+                {
+                    string relative = Path.GetRelativePath(toolsDir, actualPath);
+                    if (relative.Equals("tools.sha256", StringComparison.OrdinalIgnoreCase)
+                        || relative.Equals("tools.sha256.sig", StringComparison.OrdinalIgnoreCase)
+                        || relative.StartsWith("tensorrt" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (!manifestPaths.Contains(relative))
+                        hashFailures.Add(relative + " is not listed in tools.sha256");
+                }
+
+                if (manifestSignaturePresent)
+                {
+                    string? publicKey = Environment.GetEnvironmentVariable("FORGEFLOW_MANIFEST_PUBLIC_KEY");
+                    if (string.IsNullOrWhiteSpace(publicKey))
+                    {
+                        details.Add("Warning: tools.sha256.sig exists but FORGEFLOW_MANIFEST_PUBLIC_KEY is not configured.");
+                        manifestSignatureValid = false;
+                    }
+                    else
+                    {
+                        manifestSignatureValid = VerifyManifestSignature(manifestPath, Path.Combine(toolsDir, "tools.sha256.sig"), publicKey);
+                        details.Add(manifestSignatureValid
+                            ? "OK: signed tools.sha256 manifest"
+                            : "Manifest signature verification failed.");
+                        if (!manifestSignatureValid) hashFailures.Add("tools.sha256.sig invalid");
+                    }
                 }
             }
             else
@@ -109,11 +152,17 @@ namespace ForgeFlow
             else
                 details.Add("Missing: rife-v4.26 model");
 
+            TensorRtRuntimeInfo tensorRt = TensorRtRuntime.Detect();
+            details.Add(tensorRt.IsAvailable
+                ? "OK: " + tensorRt.Message
+                : "Optional: " + tensorRt.Message);
+
             bool ready = missing.Count == 0
                 && hashFailures.Count == 0
                 && File.Exists(versionPath)
                 && versionMatchesAssembly
-                && rifeModelPresent;
+                && rifeModelPresent
+                && (!manifestSignaturePresent || manifestSignatureValid);
 
             if (hashFailures.Count > 0)
             {
@@ -129,6 +178,8 @@ namespace ForgeFlow
                 VersionFilePresent = File.Exists(versionPath),
                 VersionMatchesAssembly = versionMatchesAssembly,
                 RifeModelPresent = rifeModelPresent,
+                ManifestSignaturePresent = manifestSignaturePresent,
+                ManifestSignatureValid = manifestSignatureValid,
                 Summary = ready
                     ? (manifestPresent ? "Startup ready: tools verified" : "Startup ready: tools found")
                     : "Startup check failed",
@@ -136,8 +187,32 @@ namespace ForgeFlow
                 VersionText = versionText,
                 FfmpegPath = Path.Combine(toolsDir, "ffmpeg.exe"),
                 FfprobePath = Path.Combine(toolsDir, "ffprobe.exe"),
-                RifePath = Path.Combine(toolsDir, "rife-ncnn-vulkan.exe")
+                RifePath = Path.Combine(toolsDir, "rife-ncnn-vulkan.exe"),
+                TensorRtAvailable = tensorRt.IsAvailable,
+                TensorRtDetails = tensorRt.Message
             };
+        }
+
+        private static bool VerifyManifestSignature(string manifestPath, string signaturePath, string publicKey)
+        {
+            try
+            {
+                using RSA rsa = RSA.Create();
+                if (publicKey.Contains("BEGIN", StringComparison.OrdinalIgnoreCase))
+                    rsa.ImportFromPem(publicKey);
+                else
+                    rsa.FromXmlString(publicKey);
+                string encoded = File.ReadAllText(signaturePath).Trim();
+                string padded = encoded.Replace('-', '+').Replace('_', '/');
+                padded = padded.PadRight(padded.Length + ((4 - padded.Length % 4) % 4), '=');
+                byte[] signature = Convert.FromBase64String(padded);
+                byte[] content = File.ReadAllBytes(manifestPath);
+                return rsa.VerifyData(content, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static string ComputeSha256(string path)

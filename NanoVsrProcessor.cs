@@ -12,6 +12,12 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace VideoProcessing
 {
+    public enum NanoVsrExecutionBackend
+    {
+        DirectML,
+        TensorRT
+    }
+
     /// <summary>
     /// Runs the official NanoVSR 4x model in overlapping temporal windows.
     /// DirectML keeps deployment self-contained and works with the customer's DX12 GPU driver.
@@ -19,6 +25,11 @@ namespace VideoProcessing
     public sealed class NanoVsrProcessor : IDisposable
     {
         public const int TemporalWindow = 15;
+        public const int ModelScale = 4;
+        // The model's output tensor becomes very large at 4x. Keep one shared
+        // limit for the UI preflight and the worker preflight so a selection
+        // cannot pass one check and fail later inside ONNX Runtime.
+        public const long MaxOutputPixels = 38_000_000L;
         private const int TemporalOverlap = 4;
         private const int TemporalStride = TemporalWindow - TemporalOverlap;
         private const int SpatialCoreSize = 512;
@@ -39,7 +50,11 @@ namespace VideoProcessing
         private readonly string _inputName;
         private readonly string _outputName;
 
-        public NanoVsrProcessor(string modelPath, int deviceId = 0)
+        public NanoVsrProcessor(
+            string modelPath,
+            int deviceId = 0,
+            NanoVsrExecutionBackend backend = NanoVsrExecutionBackend.DirectML,
+            string? engineCachePath = null)
         {
             if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
                 throw new FileNotFoundException("NanoVSR model not found.", modelPath);
@@ -50,7 +65,18 @@ namespace VideoProcessing
                 ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
             };
-            options.AppendExecutionProvider_DML(Math.Max(0, deviceId));
+            if (backend == NanoVsrExecutionBackend.TensorRT)
+            {
+                string cachePath = string.IsNullOrWhiteSpace(engineCachePath)
+                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ForgeFlow", "TensorRTCache")
+                    : engineCachePath;
+                if (!TensorRtRuntime.TryAppendExecutionProvider(options, deviceId, cachePath, out string tensorRtMessage))
+                    throw new InvalidOperationException(tensorRtMessage);
+            }
+            else
+            {
+                options.AppendExecutionProvider_DML(Math.Max(0, deviceId));
+            }
             _session = new InferenceSession(modelPath, options);
             _inputName = _session.InputMetadata.Keys.First();
             _outputName = _session.OutputMetadata.Keys.First();
@@ -91,11 +117,11 @@ namespace VideoProcessing
             if (width <= 0 || height <= 0)
                 throw new InvalidOperationException("NanoVSR received an invalid frame size.");
 
-            int outputWidth = checked(width * 4);
-            int outputHeight = checked(height * 4);
+            int outputWidth = checked(width * ModelScale);
+            int outputHeight = checked(height * ModelScale);
             long outputPixels = (long)outputWidth * outputHeight;
-            if (outputPixels > 38_000_000)
-                throw new InvalidOperationException($"NanoVSR 4x output would be {outputWidth}x{outputHeight}. Use an input up to 1080p or choose a 2x model.");
+            if (outputPixels > MaxOutputPixels)
+                throw new InvalidOperationException($"NanoVSR x{ModelScale} output would be {outputWidth}x{outputHeight} ({outputPixels:N0} pixels), above the safe limit of {MaxOutputPixels:N0}. Choose a bundled x2 model or reduce the source resolution before processing.");
 
             var watch = Stopwatch.StartNew();
             int completed = 0;
@@ -200,12 +226,12 @@ namespace VideoProcessing
                     using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = _session.Run(new[] { input });
                     Tensor<float> output = results.First(value => value.Name == _outputName).AsTensor<float>();
 
-                    int tileOutputWidth = checked(tile.Width * 4);
-                    int tileOutputHeight = checked(tile.Height * 4);
-                    int sourceOffsetX = checked((tile.CoreX - tile.SourceX) * 4);
-                    int sourceOffsetY = checked((tile.CoreY - tile.SourceY) * 4);
-                    int coreOutputWidth = checked(tile.CoreWidth * 4);
-                    int coreOutputHeight = checked(tile.CoreHeight * 4);
+                    int tileOutputWidth = checked(tile.Width * ModelScale);
+                    int tileOutputHeight = checked(tile.Height * ModelScale);
+                    int sourceOffsetX = checked((tile.CoreX - tile.SourceX) * ModelScale);
+                    int sourceOffsetY = checked((tile.CoreY - tile.SourceY) * ModelScale);
+                    int coreOutputWidth = checked(tile.CoreWidth * ModelScale);
+                    int coreOutputHeight = checked(tile.CoreHeight * ModelScale);
 
                     for (int localIndex = keepFrom; localIndex <= keepThrough; localIndex++)
                     {

@@ -6,61 +6,26 @@ namespace ForgeFlow.Security
     public enum LicenseAccessMode
     {
         None,
-        Licensed,
-        Trial
+        Free
     }
 
     public sealed class LicenseGuard
     {
         private static readonly byte[] GuardKey = SHA256.HashData(
-            Encoding.UTF8.GetBytes("ForgeFlow::Lite::LicenseGuard::2026::" + HardwareIdHelper.GetHardwareId()));
+            Encoding.UTF8.GetBytes("ForgeFlow::Free::ProcessingSession::2026::" + HardwareIdHelper.GetHardwareId()));
 
-        private readonly LicenseManager _licenseManager;
+        public GuardDecision EvaluateAccess() => GuardDecision.AllowFree();
 
-        public LicenseGuard(LicenseManager licenseManager)
-        {
-            _licenseManager = licenseManager;
-        }
-
-        public GuardDecision EvaluateAccess()
-        {
-            if (HasUsableLicense())
-                return GuardDecision.AllowLicensed(_licenseManager.CurrentLicense.LicenseKey);
-
-            var (allowed, remaining, tampered) = TrialManager.CheckTrial();
-            if (tampered)
-                return GuardDecision.Deny("Trial data or system time was tampered with. License activation is required.");
-
-            if (!allowed)
-                return GuardDecision.Deny($"Trial ended. ForgeFlow allows {TrialManager.MaxTrialVideos} processing attempts before activation is required.");
-
-            return GuardDecision.AllowTrial(remaining, TrialManager.GetTrialCount());
-        }
-
-        public GuardSession? BeginProcessingSession(out GuardDecision decision)
+        public GuardSession BeginProcessingSession(out GuardDecision decision)
         {
             decision = EvaluateAccess();
-            if (!decision.Allowed)
-                return null;
-
-            int trialCountForSession = decision.TrialCount;
-            if (decision.Mode == LicenseAccessMode.Trial)
-            {
-                TrialManager.IncrementTrial();
-                trialCountForSession = TrialManager.GetTrialCount();
-            }
-
             var session = new GuardSession
             {
-                Mode = decision.Mode,
+                Mode = LicenseAccessMode.Free,
                 IssuedAtUtc = DateTime.UtcNow,
                 Nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)),
                 MachineToken = HardwareIdHelper.GetLicenseHardwareToken(),
-                RemainingAtStart = decision.Remaining,
-                TrialCountAtStart = trialCountForSession,
-                LicenseKeySnapshot = decision.LicenseKeySnapshot ?? string.Empty,
-                LastCheckpoint = "begin",
-                CheckpointCount = 0
+                LastCheckpoint = "begin"
             };
             session.Token = ComputeSessionToken(session);
             return session;
@@ -71,13 +36,13 @@ namespace ForgeFlow.Security
             message = string.Empty;
             if (session == null)
             {
-                message = "License session was not initialized.";
+                message = "Processing session was not initialized.";
                 return false;
             }
 
             if (session.Completed)
             {
-                message = "License session was already completed.";
+                message = "Processing session was already completed.";
                 return false;
             }
 
@@ -97,7 +62,7 @@ namespace ForgeFlow.Security
 
             if (session!.CheckpointCount < 5)
             {
-                message = "Processing did not pass all required license checkpoints.";
+                message = "Processing did not pass all required checkpoints.";
                 return false;
             }
 
@@ -108,70 +73,28 @@ namespace ForgeFlow.Security
             return true;
         }
 
-        private bool VerifySessionState(GuardSession session, out string message)
+        private static bool VerifySessionState(GuardSession session, out string message)
         {
             message = string.Empty;
             if (!ConstantTimeEquals(ComputeSessionToken(session), session.Token))
             {
-                message = "License session integrity check failed.";
+                message = "Processing session integrity check failed.";
                 return false;
             }
 
-            if (session.Mode == LicenseAccessMode.Licensed)
+            if (session.Mode != LicenseAccessMode.Free)
             {
-                GuardDecision decision = EvaluateAccess();
-                if (!decision.Allowed)
-                {
-                    message = decision.Message;
-                    return false;
-                }
-
-                if (decision.Mode != session.Mode)
-                {
-                    message = "License mode changed during processing.";
-                    return false;
-                }
-
-                string currentKey = _licenseManager.CurrentLicense.LicenseKey.Trim();
-                if (!ConstantTimeEquals(currentKey, session.LicenseKeySnapshot))
-                {
-                    message = "Active license changed during processing.";
-                    return false;
-                }
-            }
-            else if (session.Mode == LicenseAccessMode.Trial)
-            {
-                var (_, _, tampered) = TrialManager.CheckTrial();
-                if (tampered)
-                {
-                    message = "Trial data or system time was tampered with during processing.";
-                    return false;
-                }
-
-                if (TrialManager.GetTrialCount() != session.TrialCountAtStart)
-                {
-                    message = "Trial attempt counter changed during processing.";
-                    return false;
-                }
+                message = "Processing session mode is not supported.";
+                return false;
             }
 
             return true;
-        }
-
-        private bool HasUsableLicense()
-        {
-            LicenseInfo license = _licenseManager.CurrentLicense;
-            return _licenseManager.IsLicenseValid() &&
-                   license.Type != LicenseType.None &&
-                   !license.TamperDetected &&
-                   license.Status == LicenseStatus.Active;
         }
 
         private static string ComputeSessionToken(GuardSession session)
         {
             string payload =
                 $"{session.Mode}|{session.IssuedAtUtc.Ticks}|{session.Nonce}|{session.MachineToken}|" +
-                $"{session.RemainingAtStart}|{session.TrialCountAtStart}|{session.LicenseKeySnapshot}|" +
                 $"{session.LastCheckpoint}|{session.CheckpointCount}|{(session.Completed ? 1 : 0)}";
 
             return Convert.ToHexString(HMACSHA256.HashData(GuardKey, Encoding.UTF8.GetBytes(payload)));
@@ -191,9 +114,6 @@ namespace ForgeFlow.Security
             internal DateTime IssuedAtUtc { get; set; }
             internal string Nonce { get; set; } = string.Empty;
             internal string MachineToken { get; set; } = string.Empty;
-            internal int RemainingAtStart { get; set; }
-            internal int TrialCountAtStart { get; set; }
-            internal string LicenseKeySnapshot { get; set; } = string.Empty;
             internal string LastCheckpoint { get; set; } = string.Empty;
             internal int CheckpointCount { get; set; }
             internal bool Completed { get; set; }
@@ -205,24 +125,12 @@ namespace ForgeFlow.Security
     {
         public bool Allowed { get; private init; }
         public LicenseAccessMode Mode { get; private init; }
-        public int Remaining { get; private init; }
-        public int TrialCount { get; private init; }
         public string Message { get; private init; } = string.Empty;
-        public string? LicenseKeySnapshot { get; private init; }
 
-        public static GuardDecision AllowLicensed(string licenseKey) => new()
+        public static GuardDecision AllowFree() => new()
         {
             Allowed = true,
-            Mode = LicenseAccessMode.Licensed,
-            LicenseKeySnapshot = licenseKey.Trim()
-        };
-
-        public static GuardDecision AllowTrial(int remaining, int trialCount) => new()
-        {
-            Allowed = true,
-            Mode = LicenseAccessMode.Trial,
-            Remaining = remaining,
-            TrialCount = trialCount
+            Mode = LicenseAccessMode.Free
         };
 
         public static GuardDecision Deny(string message) => new()

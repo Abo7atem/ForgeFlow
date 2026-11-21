@@ -42,7 +42,7 @@ namespace ForgeFlow
             _caption.VerticalContentAlignment = VerticalAlignment.Top;
             _caption.ToolTip = "الوصف الذي سيُكتب في TikTok Studio. يمكنك مراجعته داخل Chrome قبل النشر.";
 
-            _status.Text = "جاهز. سيستخدم ForgeFlow ملف Chrome مستقلًا ويحفظ تسجيل دخول TikTok محليًا.";
+            _status.Text = "جاهز. رفع مباشر عبر Chrome الحقيقي (أسلوب Decoy) مع محاولة تفعيل HD تلقائيًا.";
             _status.Foreground = Brush("#A1A1AA");
             _status.TextWrapping = TextWrapping.Wrap;
             _status.FlowDirection = FlowDirection.RightToLeft;
@@ -85,7 +85,7 @@ namespace ForgeFlow
             });
             var title = new StackPanel { Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             title.Children.Add(new TextBlock { Text = "TikTok Chrome Upload", FontSize = 23, FontWeight = FontWeights.SemiBold });
-            title.Children.Add(new TextBlock { Text = "رفع حقيقي داخل TikTok Studio • بدون كلمات مرور أو أدوات خارجية", Foreground = Brush("#A1A1AA"), Margin = new Thickness(0, 4, 0, 0) });
+            title.Children.Add(new TextBlock { Text = "رفع حقيقي داخل TikTok Studio عبر Chrome • بدون كلمات مرور أو أدوات خارجية", Foreground = Brush("#A1A1AA"), Margin = new Thickness(0, 4, 0, 0) });
             Grid.SetColumn(title, 1);
             header.Children.Add(title);
             root.Children.Add(header);
@@ -122,7 +122,7 @@ namespace ForgeFlow
                 Margin = new Thickness(0, 18, 0, 14),
                 Child = new TextBlock
                 {
-                    Text = "أول مرة: اضغط «تسجيل الدخول»، سجّل دخول TikTok ثم أغلق Chrome بالكامل. ارفع ملف TikTok60Ultra وانشره Private أولًا حتى تنتهي المعالجة، ثم حوّله إلى عام. لا تضف صوتًا من مكتبة TikTok لأن ذلك يعيد ترميز الفيديو؛ استخدم صوت المقطع الأصلي. قد تبدأ المعاينة 720p ثم ترتفع بعد اكتمال المعالجة.",
+                    Text = "الطريقة: اضغط «تسجيل الدخول» مرة واحدة وسجّل دخول TikTok في Chrome الخاص بـForgeFlow. يمكنك إبقاء Chrome مفتوحاً ثم الضغط «رفع عبر Chrome»؛ سيعيد ForgeFlow استخدام الجلسة نفسها ويتولى اختيار الملف والوصف برمجياً. يحاول تفعيل Upload HD/1080p إن ظهر لحسابك. استخدم ملف TikTok60Ultra (ملف 1080p+ AUTO قريب من 50MB عند الحاجة) وانشر Private أولاً حتى تكتمل المعالجة، ثم راجع النتيجة وحوّله إلى عام. لا تضف صوتاً من مكتبة TikTok لأنه قد يعيد ترميز الفيديو؛ استخدم الصوت المضمّن في الملف. قد تبدأ المعاينة 720p ثم ترتفع بعد اكتمال المعالجة.",
                     Foreground = Brush("#D4D4D8"),
                     TextWrapping = TextWrapping.Wrap,
                     FlowDirection = FlowDirection.RightToLeft,

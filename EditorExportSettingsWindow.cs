@@ -86,6 +86,16 @@ namespace ForgeFlow
             root.Children.Add(header);
 
             var content = new StackPanel { Margin = new Thickness(20, 14, 20, 14) };
+            var quick = new Border { Background = PanelAlt, CornerRadius = new CornerRadius(8), Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10) };
+            var quickPanel = new StackPanel();
+            quickPanel.Children.Add(new TextBlock { Text = "قوالب احترافية سريعة", Foreground = Brushes.LightGray, Margin = new Thickness(0, 0, 0, 7) });
+            var quickButtons = new StackPanel { Orientation = Orientation.Horizontal };
+            var fourK = new Button { Content = "4K Ultra • 150 Mbps", Height = 34, Margin = new Thickness(0, 0, 7, 0), ToolTip = "Master عالي الجودة بدقة 4K وبت ريت مرتفع." };
+            fourK.Click += (_, _) => Apply4KPreset();
+            var lossless = new Button { Content = "Lossless Master", Height = 34, ToolTip = "ترميز H.264 CRF 0؛ حجم الملف سيكون كبيرًا جدًا." };
+            lossless.Click += (_, _) => ApplyLosslessPreset();
+            quickButtons.Children.Add(fourK); quickButtons.Children.Add(lossless);
+            quickPanel.Children.Add(quickButtons); quick.Child = quickPanel; content.Children.Add(quick);
             content.Children.Add(Section("إعدادات الصورة", new (string, Control)[]
             {
                 ("العرض", _width), ("الارتفاع", _height), ("معدل الإطارات", _fps)
@@ -170,6 +180,8 @@ namespace ForgeFlow
             Add(_encoder, "H.265 / HEVC — حجم أصغر (CPU)", "libx265");
             Add(_encoder, "NVIDIA H.264 — سريع", "h264_nvenc");
             Add(_encoder, "NVIDIA HEVC — سريع وحجم أصغر", "hevc_nvenc");
+            Add(_encoder, "AMD H.264 — AMF", "h264_amf");
+            Add(_encoder, "AMD HEVC — AMF وحجم أصغر", "hevc_amf");
             Add(_rateControl, "بت ريت محدد VBR", "bitrate"); Add(_rateControl, "جودة ثابتة CRF / CQ", "quality");
             Add(_preset, "سريع", "fast"); Add(_preset, "متوازن", "medium"); Add(_preset, "بطيء — جودة أعلى", "slow"); Add(_preset, "أفضل جودة", "quality");
             Add(_pixelFormat, "8-bit — yuv420p (الأكثر توافقًا)", "yuv420p"); Add(_pixelFormat, "10-bit — yuv420p10le (HEVC)", "yuv420p10le");
@@ -214,7 +226,27 @@ namespace ForgeFlow
             _quality.IsEnabled = !bitrate;
             _qualityValue.Foreground = !bitrate ? Brushes.White : Brushes.Gray;
             _audioBitrate.IsEnabled = SelectedValue(_audio) == "on";
-            if (SelectedValue(_encoder) is "libx264" or "h264_nvenc" && SelectedValue(_pixelFormat) == "yuv420p10le") Select(_pixelFormat, "yuv420p");
+            if (SelectedValue(_encoder) is "libx264" or "h264_nvenc" or "h264_amf" && SelectedValue(_pixelFormat) == "yuv420p10le") Select(_pixelFormat, "yuv420p");
+        }
+
+        private void Apply4KPreset()
+        {
+            bool portrait = _height.Text.Trim().Length > 0 &&
+                            int.TryParse(_height.Text, out int h) && int.TryParse(_width.Text, out int w) && h > w;
+            _width.Text = (portrait ? 2160 : 3840).ToString(CultureInfo.InvariantCulture);
+            _height.Text = (portrait ? 3840 : 2160).ToString(CultureInfo.InvariantCulture);
+            Select(_fps, "60"); Select(_encoder, "hevc_nvenc"); Select(_rateControl, "bitrate");
+            Select(_preset, "quality"); Select(_pixelFormat, "yuv420p");
+            _targetBitrate.Text = "150"; _maxBitrate.Text = "200"; _bufferSize.Text = "400";
+            _quality.Value = 12; Select(_gop, "1"); Select(_audioBitrate, "320"); Select(_fastStart, "on");
+            UpdateControlState(); UpdateEstimate();
+        }
+
+        private void ApplyLosslessPreset()
+        {
+            Select(_encoder, "libx264"); Select(_rateControl, "quality"); Select(_preset, "quality");
+            Select(_pixelFormat, "yuv420p"); _quality.Value = 0; Select(_fastStart, "on");
+            UpdateControlState(); UpdateEstimate();
         }
 
         private void UpdateEstimate()

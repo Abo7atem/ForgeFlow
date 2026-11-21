@@ -8,5 +8,6 @@
   <ItemGroup>
     <Compile Include="..\..\EditTimelineModel.cs" Link="EditTimelineModel.cs" />
     <Compile Include="..\..\TimelinePlaybackNavigator.cs" Link="TimelinePlaybackNavigator.cs" />
+    <Compile Include="..\..\SubtitleService.cs" Link="SubtitleService.cs" />
   </ItemGroup>
 </Project>

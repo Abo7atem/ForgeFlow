@@ -35,10 +35,10 @@ namespace ForgeFlow
             root.Children.Add(CreateLine("Version", version));
             root.Children.Add(CreateLine("Plan", planStatus));
             root.Children.Add(CreateLine("Outputs", "Video 60FPS + TikTok30FPS"));
-            root.Children.Add(CreateLine("Store", "creators.sa/a7atem"));
+            root.Children.Add(CreateLine("License", "MIT | Free | No activation required"));
             root.Children.Add(new TextBlock
             {
-                Text = "جميع الحقوق محفوظة A.Hatem T-Zone SYR",
+                Text = "ForgeFlow by A.Hatem T-Zone SYR | MIT license",
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 166)),
                 Margin = new Thickness(0, 18, 0, 0)
             });

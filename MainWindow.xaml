@@ -1,4 +1,4 @@
-﻿<Window x:Class="ForgeFlow.MainWindow"
+<Window x:Class="ForgeFlow.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ForgeFlow"
@@ -410,21 +410,21 @@
                         Padding="10,4"
                         HorizontalAlignment="Right">
                     <TextBlock x:Name="PlanBadgeTextBlock"
-                               Text="TRIAL"
-                               Foreground="#FFE0AD"
+                               Text="FREE &amp; OPEN SOURCE"
+                               Foreground="#CAFFDC"
                                FontSize="10"
                                FontWeight="SemiBold"
                                TextAlignment="Center"/>
                 </Border>
                 <TextBlock x:Name="LicenseStatusTextBlock"
-                           Text="Checking license..."
+                           Text="No activation required | لا يحتاج إلى تفعيل"
                            Foreground="#8E8E93"
                            FontSize="12"
                            FontWeight="SemiBold"
                            TextAlignment="Right"
                            Margin="0,6,0,0"/>
                 <TextBlock x:Name="PlanDetailsTextBlock"
-                           Text="3 trial attempts"
+                           Text="Unlimited processing | MIT license"
                            Foreground="#6E6E73"
                            FontSize="11"
                            TextAlignment="Right"
@@ -467,7 +467,7 @@
                        VerticalAlignment="Center"
                        Foreground="#8E8E93"/>
             <TextBox Grid.Column="1" x:Name="OutputTextBox" Height="34"
-                     ToolTip="ForgeFlow creates Video 60FPS, TikTok 60 Ultra, and patched TikTok30FPS exports."/>
+                     ToolTip="ForgeFlow creates a 4K Ultra Master plus Video 60FPS, TikTok 60 Ultra, and patched TikTok30FPS exports."/>
             <Button Grid.Column="3" Content="اختيار"
                     Height="34" Click="BrowseOutput_Click"/>
         </Grid>
@@ -541,32 +541,54 @@
                             Background="#176B87" BorderBrush="#2493B7" Foreground="White"
                             ToolTip="محرر متعدد المسارات للقص والصوت والنصوص والصور والمؤثرات"
                             Click="EditBeforeEnhanceButton_Click"/>
-                    <ComboBox x:Name="PresetComboBox"
-                              Width="110"
-                              Height="26"
-                              FontSize="11"
-                              Margin="6,0,0,0"
-                              SelectionChanged="PresetComboBox_SelectionChanged"
-                              SelectedIndex="1">
-                        <ComboBoxItem Content="Fast"/>
-                        <ComboBoxItem Content="Balanced"/>
-                        <ComboBoxItem Content="Quality"/>
-                        <ComboBoxItem Content="TikTok Ultra"/>
-                        <ComboBoxItem Content="Gaming Restore Ultra"/>
-                        <ComboBoxItem Content="Aesthetic Vivid"/>
-                    </ComboBox>
-                    <ComboBox x:Name="VisualStyleComboBox"
-                              Width="116"
-                              Height="26"
-                              FontSize="11"
-                              Margin="6,0,0,0"
-                              SelectionChanged="VisualStyleComboBox_SelectionChanged">
-                        <ComboBoxItem Content="Natural" Tag="natural"/>
-                        <ComboBoxItem Content="TikTok Detail" Tag="tiktok-detail"/>
-                        <ComboBoxItem Content="Gaming Restore" Tag="gaming-restore"/>
-                        <ComboBoxItem Content="TikTok Vivid" Tag="tiktok-vivid"/>
-                        <ComboBoxItem Content="Vivid+" Tag="tiktok-vivid-plus"/>
-                    </ComboBox>
+                    <StackPanel Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="المخرجات" Foreground="#8E8E93" FontSize="10" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <CheckBox x:Name="GeneratePc60CheckBox" Content="60FPS" IsChecked="True" Foreground="White" FontSize="11" Margin="0,0,6,0" ToolTip="إنشاء نسخة Video 60FPS." Checked="OutputSelectionChanged" Unchecked="OutputSelectionChanged"/>
+                        <CheckBox x:Name="Generate4KCheckBox" Content="4K Ultra" IsChecked="False" Foreground="#FFB44C" FontSize="11" Margin="0,0,6,0" ToolTip="إنشاء نسخة Master بدقة 4K وببت ريت مرتفع." Checked="OutputSelectionChanged" Unchecked="OutputSelectionChanged"/>
+                        <CheckBox x:Name="GenerateTikTok60CheckBox" Content="TikTok 60" IsChecked="False" Foreground="White" FontSize="11" Margin="0,0,6,0" ToolTip="إنشاء نسخة TikTok 60 Ultra." Checked="OutputSelectionChanged" Unchecked="OutputSelectionChanged"/>
+                        <CheckBox x:Name="GenerateTikTok30CheckBox" Content="TikTok 30" IsChecked="False" Foreground="White" FontSize="11" ToolTip="إنشاء نسخة TikTok 30FPS patched." Checked="OutputSelectionChanged" Unchecked="OutputSelectionChanged"/>
+                    </StackPanel>
+                    <StackPanel Margin="6,0,0,0">
+                        <TextBlock Text="Workflow Preset"
+                                   Foreground="#8E8E93"
+                                   FontSize="10"
+                                   Margin="2,0,0,2"/>
+                        <ComboBox x:Name="PresetComboBox"
+                                  Width="125"
+                                  Height="26"
+                                  FontSize="11"
+                                  ToolTip="Preset: applies a complete, compatible workflow. Choose this first; fine-tune below only if needed."
+                                  SelectionChanged="PresetComboBox_SelectionChanged"
+                                  SelectedIndex="1">
+                            <ComboBoxItem Content="Fast"/>
+                            <ComboBoxItem Content="Auto Smart"/>
+                            <ComboBoxItem Content="Balanced"/>
+                            <ComboBoxItem Content="Quality"/>
+                            <ComboBoxItem Content="TikTok Ultra"/>
+                            <ComboBoxItem Content="Gaming Restore Ultra"/>
+                            <ComboBoxItem Content="Aesthetic Vivid"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Margin="6,0,0,0">
+                        <TextBlock Text="Visual Finish"
+                                   Foreground="#8E8E93"
+                                   FontSize="10"
+                                   Margin="2,0,0,2"/>
+                        <ComboBox x:Name="VisualStyleComboBox"
+                                  Width="155"
+                                  Height="26"
+                                  FontSize="11"
+                                  ToolTip="Visual finish: Natural keeps pixels unchanged; Game Detail is for gameplay; Vivid changes color."
+                                  SelectionChanged="VisualStyleComboBox_SelectionChanged">
+                            <ComboBoxItem Content="Natural" Tag="natural"/>
+                            <ComboBoxItem Content="Game Detail (Fast)" Tag="game-detail"/>
+                            <ComboBoxItem Content="Game Detail Pro (Experimental)" Tag="game-detail-pro"/>
+                            <ComboBoxItem Content="TikTok Detail" Tag="tiktok-detail"/>
+                            <ComboBoxItem Content="Gaming Restore" Tag="gaming-restore"/>
+                            <ComboBoxItem Content="TikTok Vivid" Tag="tiktok-vivid"/>
+                            <ComboBoxItem Content="Vivid+" Tag="tiktok-vivid-plus"/>
+                        </ComboBox>
+                    </StackPanel>
                     <Grid Width="118"
                           Height="26"
                           Margin="6,0,0,0"
@@ -600,7 +622,7 @@
                             Margin="6,0,0,0"
                             Click="AboutButton_Click"/>
                     <Button x:Name="SupportButton"
-                            Content="Activate / Buy"
+                            Content="Support"
                             Height="26"
                             MinWidth="102"
                             Padding="10,0"
@@ -748,7 +770,92 @@
                                    Width="165"
                                    Margin="0,4,0,0"/>
                     </StackPanel>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="TikTok Profile"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="TikTokProfileComboBox"
+                                  Width="170"
+                                  Height="30"
+                                  FontSize="11"
+                                  ToolTip="Web Signal is the low-risk edit-list/metadata signal from newer TikTok Web experiments. Legacy patch inflates sample tables. Studio HQ visibly re-encodes.">
+                            <ComboBoxItem Content="Web Signal (TikTok Web)" Tag="websignal"/>
+                            <ComboBoxItem Content="HD Metadata Patch (legacy)" Tag="patch"/>
+                            <ComboBoxItem Content="Studio HQ H.264" Tag="high"/>
+                            <ComboBoxItem Content="Safe H.264 (no patch)" Tag="safe"/>
+                        </ComboBox>
+                        <TextBlock Text="Web Signal = timing-safe ingest signal; Legacy = sample-table experiment; Studio HQ = visible re-encode."
+                                   Foreground="#6E6E73"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Width="170"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="4K Master Bitrate"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="FourKBitrateComboBox"
+                                  Width="125"
+                                  Height="30"
+                                  FontSize="11"
+                                  ToolTip="البت ريت المستهدف لمخرج 4K Ultra. الحد الأقصى والـBuffer يحسبان تلقائياً."
+                                  SelectionChanged="FourKBitrateComboBox_SelectionChanged">
+                            <ComboBoxItem Content="80 Mbps" Tag="80"/>
+                            <ComboBoxItem Content="100 Mbps" Tag="100"/>
+                            <ComboBoxItem Content="120 Mbps" Tag="120"/>
+                            <ComboBoxItem Content="150 Mbps" Tag="150"/>
+                            <ComboBoxItem Content="200 Mbps" Tag="200"/>
+                            <ComboBoxItem Content="250 Mbps" Tag="250"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="TikTok Bitrate"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="TikTokBitrateComboBox"
+                                  Width="105"
+                                  Height="30"
+                                  FontSize="11"
+                                  ToolTip="Target video bitrate for TikTok60Ultra.">
+                            <ComboBoxItem Content="25 Mbps" Tag="25"/>
+                            <ComboBoxItem Content="35 Mbps" Tag="35"/>
+                            <ComboBoxItem Content="50 Mbps" Tag="50"/>
+                            <ComboBoxItem Content="70 Mbps" Tag="70"/>
+                            <ComboBoxItem Content="120 Mbps" Tag="120"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="Audio"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   Margin="0,0,0,3"/>
+                        <ComboBox x:Name="TikTokAudioComboBox"
+                                  Width="105"
+                                  Height="30"
+                                  FontSize="11"
+                                  ToolTip="AAC audio bitrate; 48 kHz stereo is always used.">
+                            <ComboBoxItem Content="192 kbps" Tag="192"/>
+                            <ComboBoxItem Content="256 kbps" Tag="256"/>
+                            <ComboBoxItem Content="320 kbps" Tag="320"/>
+                        </ComboBox>
+                    </StackPanel>
                 </WrapPanel>
+                <Border Background="#171719"
+                        BorderBrush="#3A3A3C"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,6"
+                        Margin="0,8,0,0">
+                    <TextBlock x:Name="WorkflowRecommendationTextBlock"
+                               Text="Recommendation: choose a preset first. ForgeFlow will lock incompatible combinations automatically."
+                               Foreground="#FFB44C"
+                               FontSize="11"
+                               TextWrapping="Wrap"/>
+                </Border>
             </StackPanel>
         </Grid>
 
@@ -1092,12 +1199,6 @@
                     Margin="0,0,8,0"
                     IsEnabled="False"
                     Click="RetryButton_Click"/>
-            <Button x:Name="ActivationButton"
-                    Content="Activate / Buy"
-                    MinWidth="110" Height="36"
-                    Padding="16,0"
-                    Margin="0,0,8,0"
-                    Click="ActivationButton_Click"/>
             <Button x:Name="UpdateButton"
                     Content="Updates"
                     MinWidth="110" Height="36"

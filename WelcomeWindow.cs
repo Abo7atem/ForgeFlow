@@ -8,8 +8,6 @@ namespace ForgeFlow
 {
     public sealed class WelcomeWindow : Window
     {
-        public bool OpenUpgrade { get; private set; }
-
         public WelcomeWindow()
         {
             Title = "Welcome to ForgeFlow";
@@ -48,21 +46,21 @@ namespace ForgeFlow
 
             root.Children.Add(new TextBlock
             {
-                Text = "Try all ForgeFlow modes and options for 3 processing attempts. After that, activation is required to continue.",
+                Text = "ForgeFlow is free and open source. Use every feature without an account, activation, or usage limit.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(209, 209, 214)),
                 Margin = new Thickness(0, 10, 0, 0)
             });
 
             root.Children.Add(CreateCard(
-                "Trial",
-                "3 full-feature processing attempts",
-                "All modes are available during trial. After that, activate a license to continue."));
+                "Free and open source",
+                "Unlimited video processing",
+                "No account or activation required. The MIT license lets everyone use, modify, and share the project."));
 
             root.Children.Add(CreateCard(
-                "License",
-                "Unlimited processing after activation",
-                "Best for production work and continued delivery."));
+                "Help the project grow",
+                "Use it, improve it, and share it",
+                "Keep the copyright and license notice with copies of the project."));
 
             var buttons = new StackPanel
             {
@@ -71,25 +69,13 @@ namespace ForgeFlow
                 Margin = new Thickness(0, 24, 0, 0)
             };
 
-            var continueTrial = CreateButton("Continue Trial", false);
-            continueTrial.Margin = new Thickness(0, 0, 8, 0);
-            continueTrial.Click += (_, _) =>
+            var continueButton = CreateButton("Continue", true);
+            continueButton.Click += (_, _) =>
             {
-                OpenUpgrade = false;
                 DialogResult = true;
                 Close();
             };
-
-            var upgrade = CreateButton("Activate / Buy", true);
-            upgrade.Click += (_, _) =>
-            {
-                OpenUpgrade = true;
-                DialogResult = true;
-                Close();
-            };
-
-            buttons.Children.Add(continueTrial);
-            buttons.Children.Add(upgrade);
+            buttons.Children.Add(continueButton);
             root.Children.Add(buttons);
 
             Content = root;

@@ -16,13 +16,22 @@ namespace ForgeFlow
         public bool PlayCompletionSound { get; set; } = true;
         public bool ShowProcessingSummary { get; set; } = true;
         public string SelectedUpscaleProfileId { get; set; } = "off";
-        public bool EnableRife { get; set; } = true;
+        // Do not interpolate already-smooth 60 FPS gameplay by default. RIFE is
+        // still available as an explicit opt-in for lower-FPS or creative work.
+        public bool EnableRife { get; set; } = false;
         public string ProcessingOrder { get; set; } = "rife-then-upscale";
         public string SubjectFocusMode { get; set; } = "off";
         public int SubjectFocusStrength { get; set; } = 70;
         public string VisualStyle { get; set; } = "natural";
         public int VisualStyleStrength { get; set; } = 70;
         public string HardwareAccelerationMode { get; set; } = "cpu";
+        // TikTok export controls.  The TikTok profile is the default for the
+        // quality-preservation path; Safe H.264 remains available for players
+        // that reject non-standard timing metadata.
+        public string TikTokProfile { get; set; } = "safe";
+        public int TikTokBitrateMbps { get; set; } = 35;
+        public int TikTokAudioKbps { get; set; } = 256;
+        public int FourKBitrateMbps { get; set; } = 150;
         public bool HasSeenWelcomeScreen { get; set; }
 
         public static AppSettings Load()
@@ -43,16 +52,27 @@ namespace ForgeFlow
 
         public void Save()
         {
+            string? tempPath = null;
             try
             {
                 string? dir = Path.GetDirectoryName(SettingsPath);
                 if (!string.IsNullOrWhiteSpace(dir))
                     Directory.CreateDirectory(dir);
 
-                File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, SerializerOptions));
+                tempPath = SettingsPath + ".tmp." + Environment.ProcessId;
+                File.WriteAllText(tempPath, JsonSerializer.Serialize(this, SerializerOptions));
+                File.Move(tempPath, SettingsPath, true);
             }
             catch
             {
+            }
+            finally
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath)) File.Delete(tempPath);
+                }
+                catch { }
             }
         }
     }
